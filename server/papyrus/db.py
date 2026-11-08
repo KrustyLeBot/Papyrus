@@ -4,8 +4,10 @@ One connection per thread (the API's thread pool, the worker): SQLite serialises
 busy_timeout makes a writer wait instead of failing while another one commits."""
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import threading
+from urllib.parse import quote
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -150,8 +152,9 @@ class Database:
     slower to write and a writer blocks readers for an instant, which a personal archive does not notice. One Papyrus instance
     per database folder, always."""
 
-    def __init__(self, path: Path, journal: str = "auto"):
+    def __init__(self, path: Path, journal: str = "auto", locking: str = "auto"):
         self.path = path
+        self.vfs: str | None = None  # "unix-dotfile" when the share refuses file locks
         share = network_filesystem(path.parent)
         self.journal = ("delete" if share else "wal") if journal == "auto" else journal
         self.network = share
@@ -159,6 +162,7 @@ class Database:
             print(f"papyrus: the data folder is on a network share ({share}): SQLite uses journal_mode=DELETE, synchronous=FULL", flush=True)
         elif self.network:
             print(f"papyrus: WARNING the data folder is on a network share ({share}) and journal_mode=WAL was forced: expect lock errors", flush=True)
+        self._choose_locking(locking)
         self._local = threading.local()
         self._all: list[sqlite3.Connection] = []
         self._lock = threading.Lock()
@@ -175,8 +179,49 @@ class Database:
                 conn.execute("ALTER TABLE documents ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
+    @property
+    def locking(self) -> str:
+        return "dotfile" if self.vfs else "posix"
+
+    def _lock_file(self) -> Path:
+        return self.path.with_name(self.path.name + ".lock")
+
+    def _choose_locking(self, mode: str) -> None:
+        """Some SMB/NFS mounts refuse the POSIX file locks SQLite takes (every write then ends in « database is locked »
+        although nothing else uses the file). On such a share SQLite's `unix-dotfile` VFS locks with a lock file instead,
+        which any file system can do. Papyrus tries the normal locks first, on a share only, and falls back by itself.
+        A lock file left by a crash is removed at start: there is only ever one Papyrus on a data folder."""
+        if mode == "dotfile" or (mode == "auto" and self.network and self.journal == "delete" and not self._posix_locks_work()):
+            self.vfs = "unix-dotfile"
+            lock = self._lock_file()
+            if lock.is_dir():
+                shutil.rmtree(lock, ignore_errors=True)
+            else:
+                lock.unlink(missing_ok=True)
+            print("papyrus: this share refuses file locks: SQLite locks with a lock file (unix-dotfile) instead", flush=True)
+
+    def _posix_locks_work(self) -> bool:
+        try:
+            conn = sqlite3.connect(self.path, timeout=2, isolation_level=None)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("CREATE TABLE IF NOT EXISTS _lock_probe(x)")
+                conn.execute("DROP TABLE _lock_probe")
+                conn.execute("COMMIT")
+            finally:
+                conn.close()
+            return True
+        except sqlite3.OperationalError as error:
+            if "locked" in str(error) or "busy" in str(error):
+                return False
+            raise
+
     def _open(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
+        if self.vfs:
+            conn = sqlite3.connect(f"file:{quote(str(self.path))}?vfs={self.vfs}", uri=True, timeout=30,
+                                   isolation_level=None, check_same_thread=False)
+        else:
+            conn = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         if self.journal == "delete":
             conn.execute("PRAGMA journal_mode=DELETE")

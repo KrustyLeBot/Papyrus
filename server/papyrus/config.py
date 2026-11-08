@@ -42,6 +42,13 @@ def _journal() -> str:
     return mode
 
 
+def _locking() -> str:
+    mode = os.environ.get("PAPYRUS_SQLITE_LOCKING", "auto").strip().lower() or "auto"
+    if mode not in ("auto", "posix", "dotfile"):
+        raise SystemExit("papyrus: PAPYRUS_SQLITE_LOCKING must be auto, posix or dotfile")
+    return mode
+
+
 def _embed_model() -> str:
     from .embed import MODELS
 
@@ -100,6 +107,7 @@ class Config:
     build: str = "dev"
     search_defaults: dict = field(default_factory=dict)
     journal: str = "auto"
+    locking: str = "auto"
 
     @property
     def db_path(self) -> Path:
@@ -167,6 +175,7 @@ class Config:
             backup_keep=_int("BACKUP_KEEP", 7, 0),
             build=os.environ.get("PAPYRUS_BUILD", "dev"),
             journal=_journal(),
+            locking=_locking(),
             search_defaults={"semantic_min": _float("SEARCH_SEMANTIC_MIN", _model_default()), "prefix": _bool("SEARCH_PREFIX", True),
                              "fuzzy": _bool("SEARCH_FUZZY", True)},
         )

@@ -140,3 +140,56 @@ def test_journal_mode_setting_is_validated(monkeypatch):
     monkeypatch.setenv("PAPYRUS_JOURNAL", "memory")
     with pytest.raises(SystemExit, match="PAPYRUS_JOURNAL"):
         Config.from_env()
+
+
+def test_dotfile_locking_works_across_threads_with_the_delete_journal(tmp_path):
+    import threading
+
+    from papyrus.db import Database
+
+    db = Database(tmp_path / "d.db", journal="delete", locking="dotfile")
+    assert db.locking == "dotfile" and db.conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    errors = []
+
+    def work(n):
+        try:
+            for i in range(15):
+                with db.tx():
+                    db.conn.execute("INSERT INTO settings(key, value) VALUES (?, ?)", (f"k{n}-{i}", "v"))
+                db.conn.execute("SELECT COUNT(*) FROM settings").fetchone()
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=work, args=(n,)) for n in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert not errors and db.conn.execute("SELECT COUNT(*) FROM settings WHERE key LIKE 'k%'").fetchone()[0] == 60
+    db.close()
+    assert not (tmp_path / "d.db.lock").exists()
+
+
+def test_a_share_that_refuses_locks_falls_back_by_itself_and_clears_a_stale_lock(tmp_path, monkeypatch):
+    from papyrus import db as dbmod
+
+    data = tmp_path / "share"
+    data.mkdir()
+    (data / "p.db.lock").mkdir()  # left by a crash
+    monkeypatch.setattr(dbmod, "network_filesystem", lambda path, mountinfo="": "cifs")
+    monkeypatch.setattr(dbmod.Database, "_posix_locks_work", lambda self: False)
+    database = dbmod.Database(data / "p.db")
+    assert database.journal == "delete" and database.locking == "dotfile" and database.network == "cifs"
+    assert not (data / "p.db.lock").exists()
+    database.set_setting("a", "1")
+    assert database.setting("a") == "1"
+    database.close()
+    # a share whose locks work keeps the normal ones
+    monkeypatch.setattr(dbmod.Database, "_posix_locks_work", lambda self: True)
+    assert dbmod.Database(data / "q.db").locking == "posix"
+
+
+def test_locking_setting_is_validated(monkeypatch):
+    from papyrus.config import Config
+
+    monkeypatch.setenv("PAPYRUS_SQLITE_LOCKING", "none")
+    with pytest.raises(SystemExit, match="PAPYRUS_SQLITE_LOCKING"):
+        Config.from_env()
