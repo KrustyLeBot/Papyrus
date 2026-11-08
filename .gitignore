@@ -1,0 +1,14 @@
+# deployment state: never committed
+.env
+data/
+conf/*
+!conf/.gitkeep
+!conf/rules.example.yaml
+
+node_modules/
+ui/dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+.DS_Store

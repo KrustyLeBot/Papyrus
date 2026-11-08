@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="18 18 72 72">
+  <!-- Papyrus: three index cards with coloured tabs (the group hues) on a Proton-violet field.
+       Drawn on the Android adaptive-icon grid (108 units, visible 72-unit square). -->
+  <title>Papyrus</title>
+  <rect id="background" x="18" y="18" width="72" height="72" rx="16" fill="#6D4AFF"/>
+  <g id="foreground">
+    <rect x="32" y="34" width="44" height="10" rx="3" fill="#CFC4F5"/>
+    <rect x="62" y="31" width="10" height="6" rx="2" fill="#2FB59B"/>
+    <rect x="32" y="46" width="44" height="10" rx="3" fill="#E2DAFB"/>
+    <rect x="50" y="43" width="10" height="6" rx="2" fill="#E3A548"/>
+    <rect x="32" y="58" width="44" height="18" rx="3" fill="#F5F2FF"/>
+    <rect x="38" y="55" width="10" height="6" rx="2" fill="#4C8DF6"/>
+    <rect x="38" y="65" width="26" height="3" rx="1.5" fill="#6D4AFF" fill-opacity="0.55"/>
+  </g>
+</svg>

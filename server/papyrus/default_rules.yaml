@@ -1,0 +1,124 @@
+# Papyrus: default classification rules (French and Swiss personal paperwork).
+# Copy this file to conf/rules.yaml to replace it, then "Recharger les règles" in Administration.
+#
+# A type is a top-level group. A document gets every type whose keyword weights add up to the threshold or more
+# (a keyword counts once, wherever it appears; matching ignores case and accents). `subgroup_by` lists the keys
+# that name the sub-groups, best first (siret, siren, che_uid, tva, cadastre_ref, property_address, contract_no,
+# employer_name, company, year). `tags` are added to every document of the type. `skip_if` drops the type when
+# one of the listed types also matched (an electricity bill goes to Énergie, not to Factures as well).
+#
+# blacklist: keys never used to match documents (an address shared by unrelated things, a bank's own SIRET…).
+
+types:
+  - name: Fiches de paie
+    color: "#2FB59B"
+    keywords: {"net à payer": 3, "salaire brut": 3, "salaire de base": 2, "cotisations": 2, "bulletin de salaire": 3,
+               "bulletin de paie": 3, "fiche de paie": 3, "fiche de salaire": 3, "décompte de salaire": 3,
+               "net imposable": 2, "avs": 2, "lpp": 2, "ac ": 1, "urssaf": 1, "csg": 1, "lohnabrechnung": 3,
+               "brutto": 1, "salaire net": 2, "heures": 1}
+    threshold: 5
+    subgroup_by: [siret, che_uid, employer_name]
+    tags: [salaire]
+
+  - name: Immobilier
+    color: "#E3A548"
+    keywords: {"notaire": 2, "compromis de vente": 4, "promesse de vente": 4, "acte de vente": 4, "cadastre": 3,
+               "cadastré": 3, "copropriété": 2, "syndic": 2, "lot n": 1, "diagnostic": 1, "offre de prêt": 3,
+               "acquéreur": 2, "vendeur": 1, "état des lieux": 2, "bail": 2, "appel de fonds": 2, "tantièmes": 2,
+               "registre foncier": 3, "bien-fonds": 3, "prêt immobilier": 3, "dpe": 1}
+    threshold: 4
+    subgroup_by: [cadastre_ref, property_address]
+    tags: [immobilier]
+
+  - name: Impôts
+    color: "#4C8DF6"
+    keywords: {"avis d'imposition": 4, "taxe foncière": 4, "taxe d'habitation": 4, "impots.gouv": 3,
+               "revenu fiscal de référence": 4, "déclaration de revenus": 3, "direction générale des finances publiques": 3,
+               "prélèvement à la source": 2, "administration fiscale": 3, "déclaration d'impôt": 4,
+               "taxation": 1, "impôt fédéral direct": 4, "bordereau": 1, "contributions": 1}
+    threshold: 4
+    subgroup_by: [year]
+    tags: [impôts]
+
+  - name: Énergie
+    color: "#E86F5C"
+    keywords: {"électricité": 2, "kwh": 3, "edf": 2, "engie": 2, "totalenergies": 2, "gaz naturel": 2, "compteur": 1,
+               "consommation": 1, "abonnement": 1, "point de livraison": 2, "pdl": 1, "fioul": 2, "romande energie": 3,
+               "sig ": 1, "relève": 1}
+    threshold: 4
+    subgroup_by: [company, contract_no]
+    tags: [facture, énergie]
+
+  - name: Télécom
+    color: "#E86F5C"
+    keywords: {"forfait": 2, "mobile": 1, "box": 1, "fibre": 2, "orange": 1, "sfr": 2, "bouygues": 2, "free": 1,
+               "swisscom": 3, "salt": 1, "sunrise": 2, "internet": 1, "ligne": 1, "appels": 1, "data": 1, "sim": 1}
+    threshold: 4
+    subgroup_by: [company, contract_no]
+    tags: [facture, télécom]
+
+  - name: Factures
+    color: "#E86F5C"
+    keywords: {"facture": 3, "invoice": 3, "montant ttc": 2, "total ttc": 2, "tva": 1, "montant ht": 2, "à payer": 1,
+               "échéance": 1, "rechnung": 3, "mwst": 1, "bulletin de versement": 2, "qr-facture": 3, "référence client": 1}
+    threshold: 4
+    subgroup_by: [siret, siren, che_uid, tva, company]
+    skip_if: [Énergie, Télécom, Fiches de paie, Impôts]
+    tags: [facture]
+
+  - name: Banque
+    color: "#7C8AA5"
+    keywords: {"relevé de compte": 4, "extrait de compte": 4, "solde": 1, "virement": 1, "prélèvement": 1, "banque": 1,
+               "crédit agricole": 2, "bnp paribas": 2, "société générale": 2, "caisse d'épargne": 2, "ubs": 2,
+               "postfinance": 3, "raiffeisen": 2, "banque cantonale": 2, "carte bancaire": 2, "rib": 2,
+               "relevé d'identité bancaire": 4, "nouveau solde": 2, "ancien solde": 2}
+    threshold: 4
+    subgroup_by: [company, contract_no]
+    tags: [banque]
+
+  - name: Assurance
+    color: "#B89A6E"
+    keywords: {"assurance": 2, "assuré": 2, "police n": 3, "sinistre": 2, "garanties": 2, "cotisation annuelle": 2,
+               "avis d'échéance": 3, "attestation d'assurance": 4, "responsabilité civile": 2, "franchise": 1,
+               "prime": 1, "multirisque habitation": 3, "versicherung": 3}
+    threshold: 4
+    subgroup_by: [contract_no, company]
+    tags: [assurance]
+
+  - name: Santé
+    color: "#D46BB3"
+    keywords: {"ordonnance": 3, "médecin": 2, "docteur": 1, "dr ": 1, "mutuelle": 2, "remboursement": 1, "ameli": 3,
+               "sécurité sociale": 2, "caisse maladie": 3, "lamal": 3, "patient": 2, "consultation": 2,
+               "analyses": 1, "laboratoire": 1, "pharmacie": 2, "hôpital": 2, "clinique": 2, "décompte de prestations": 3}
+    threshold: 4
+    subgroup_by: [company]
+    tags: [santé]
+
+  - name: Véhicule
+    color: "#7BBE4A"
+    keywords: {"certificat d'immatriculation": 4, "carte grise": 4, "immatriculation": 2, "contrôle technique": 4,
+               "permis de conduire": 3, "garage": 2, "vidange": 2, "kilométrage": 2, "véhicule": 2, "pneus": 1,
+               "permis de circulation": 4, "expertise": 1}
+    threshold: 4
+    subgroup_by: [contract_no, company]
+    tags: [véhicule]
+
+  - name: Identité
+    color: "#7C8AA5"
+    keywords: {"carte nationale d'identité": 4, "passeport": 4, "acte de naissance": 4, "livret de famille": 4,
+               "titre de séjour": 4, "permis b": 2, "état civil": 2, "extrait d'acte": 3, "nationalité": 1}
+    threshold: 4
+    subgroup_by: []
+    tags: [identité]
+
+  - name: Emploi
+    color: "#2FB59B"
+    keywords: {"contrat de travail": 4, "période d'essai": 3, "avenant": 2, "lettre de démission": 4,
+               "solde de tout compte": 4, "attestation employeur": 4, "certificat de travail": 4, "france travail": 3,
+               "pôle emploi": 3, "rupture conventionnelle": 4, "promesse d'embauche": 4, "arbeitsvertrag": 4}
+    threshold: 4
+    subgroup_by: [siret, che_uid, employer_name]
+    tags: [emploi]
+
+blacklist: []
+#  - {key: property_address, value: "8 rue de la paix 75002 paris"}

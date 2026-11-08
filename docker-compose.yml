@@ -1,0 +1,46 @@
+# Papyrus on a Synology NAS. Put this file in /volume1/docker/papyrus/, next to a `.env` made from .env.example
+# and a conf/ folder holding httpasswd (see README), then:  docker compose up -d
+#
+# The image comes from GitHub (built by the CI at each push to main). To build it on the NAS instead, replace
+# `image:` by `build: .` and run `docker compose up -d --build`.
+#
+# Hardened like the other apps: unprivileged, no capability, read-only root filesystem, nothing leaves the NAS but
+# the embeddings model download at first start (or BAKE_MODEL=1 at build time, or a local MODEL_URL mirror).
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  papyrus:
+    image: ghcr.io/krustylebot/papyrus:latest
+    container_name: papyrus
+    restart: unless-stopped
+    logging: *logging
+    # the owner of the data folder: files copied by hand and files written by Papyrus stay one owner's
+    user: "${PUID}:${PGID}"
+    security_opt: [ "no-new-privileges:true" ]
+    cap_drop: [ ALL ]
+    read_only: true
+    tmpfs: [ "/tmp:rw,noexec,nosuid,nodev,size=256m" ]
+    pids_limit: 256
+    env_file: .env
+    environment:
+      TZ: Europe/Paris
+    volumes:
+      - ${PAPYRUS_DATA_HOST}:/data
+      - ./conf:/conf:ro
+    ports:
+      - "${WEB_PORT}:8080"
+    # idle < 150 MB; OCR and embedding peaks stay below this
+    mem_limit: 1g
+    networks: [ tunnel ]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  tunnel:
+    external: true

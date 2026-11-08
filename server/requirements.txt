@@ -1,0 +1,14 @@
+# Runtime of the server, pinned. Python 3.12 (see Dockerfile).
+fastapi==0.162.2
+starlette==1.7.0
+pydantic==2.13.5
+uvicorn==0.54.0
+python-multipart==0.0.32
+bcrypt==4.3.0
+PyYAML==6.0.3
+numpy==2.5.3
+onnxruntime==1.29.0
+tokenizers==0.23.3
+pikepdf==10.18.0
+Pillow==12.3.0
+pillow-heif==1.8.1
