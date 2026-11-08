@@ -302,8 +302,12 @@ class Grouper:
         self.update_centroids(touched)
 
     def replace(self, doc_id: int) -> None:
-        """Clears the automatic assignments of a document and places it again."""
+        """Clears the automatic assignments of a document and places it again. A locked document keeps its groups."""
         with self.db.tx():
+            locked = self.db.conn.execute("SELECT locked FROM documents WHERE id = ?", (doc_id,)).fetchone()
+            if locked and locked["locked"]:
+                self._ensure_somewhere(doc_id)
+                return
             old = self.clear_auto(doc_id)
             self.place(doc_id)
             self.update_centroids(old)

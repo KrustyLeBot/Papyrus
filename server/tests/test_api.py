@@ -229,3 +229,16 @@ def test_reprocess_all_keeps_what_was_set_by_hand(client, services, tmp_path, no
     drain(services)
     doc = client.get(f"/api/documents/{doc_id}").json()
     assert doc["status"] == "done" and doc["date"] == "2020-01-02" and "perso" in {t["name"] for t in doc["tags"]}
+
+
+def test_reprocess_keeps_a_locked_documents_groups(client, services, tmp_path, no_model):
+    f = tmp_path / "paie.txt"
+    f.write_text("BULLETIN DE SALAIRE\nSalaire brut 4 000\nCotisations 880\nNet à payer 3 120\nSIRET : 732 829 320 00074\nATELIER MOREL SAS", encoding="utf-8")
+    doc_id = upload(client, f)["id"]
+    drain(services)
+    before = [g["path"] for g in client.get(f"/api/documents/{doc_id}").json()["groups"]]
+    assert before and before != ["À classer"]
+    client.patch(f"/api/documents/{doc_id}", json={"locked": True})
+    client.post("/api/admin/reprocess-all")
+    drain(services)
+    assert [g["path"] for g in client.get(f"/api/documents/{doc_id}").json()["groups"]] == before
