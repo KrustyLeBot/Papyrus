@@ -120,5 +120,24 @@ types:
     subgroup_by: [siret, che_uid, employer_name]
     tags: [emploi]
 
+# Tags given from the words of a document, whatever its type (title or beginning of the text, or twice in the text).
+# tag: [words]. Add your own; matching ignores case and accents.
+tag_keywords:
+  notice: ["notice", "mode d'emploi", "manuel d'utilisation", "user manual", "quick start guide", "manual"]
+  contrat: ["contrat", "contract", "avenant"]
+  devis: ["devis", "estimate", "offre de prix"]
+  facture: ["facture", "invoice", "rechnung"]
+  attestation: ["attestation"]
+  certificat: ["certificat", "certificate"]
+  garantie: ["garantie", "warranty"]
+  relevé: ["relevé de compte", "relevé", "extrait de compte"]
+  ordonnance: ["ordonnance"]
+  courrier: ["madame, monsieur", "monsieur,", "madame,", "veuillez agréer", "cordialement"]
+  assurance: ["assurance", "sinistre", "versicherung"]
+  résiliation: ["résiliation", "résilier", "lettre de démission"]
+  rendez-vous: ["rendez-vous", "convocation"]
+  remboursement: ["remboursement", "rembourse"]
+  voyage: ["billet", "réservation", "boarding pass", "itinéraire", "hôtel"]
+
 blacklist: []
 #  - {key: property_address, value: "8 rue de la paix 75002 paris"}

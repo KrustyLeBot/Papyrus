@@ -192,3 +192,15 @@ def test_incompatible_cpu_turns_the_model_off_instead_of_crashing(client, servic
     assert not services.embedder.available and "processeur" in services.embedder.error
     status = client.get("/api/admin/status").json()["model"]
     assert status["status"] == "absent" and "processeur" in status["error"]
+
+
+def test_content_tags_from_keywords_without_any_type(client, services, tmp_path, no_model):
+    f = tmp_path / "notice.txt"
+    f.write_text("QUICK START GUIDE\nEpomaker keyboard\nWarranty: 12 months.\nPress FN + Q for Android.", encoding="utf-8")
+    doc_id = upload(client, f)["id"]
+    drain(services)
+    doc = client.get(f"/api/documents/{doc_id}").json()
+    names = {t["name"] for t in doc["tags"]}
+    assert {"notice", "garantie"} <= names
+    assert [g["path"] for g in doc["groups"]] == ["À classer"]  # tags do not classify
+    assert [d["id"] for d in client.get("/api/search", params={"q": "notice", "tag": "notice"}).json()["items"]] == [doc_id]

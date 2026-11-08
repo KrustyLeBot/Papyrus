@@ -67,7 +67,7 @@ class Config:
     trusted_proxies: list = field(default_factory=list)
     cookie_secure: str = "auto"
     group_threshold: float = 0.88
-    knn_threshold: float = 0.85
+    knn_threshold: float = 0.90
     backup_keep: int = 7
     build: str = "dev"
 
@@ -130,7 +130,7 @@ class Config:
             trusted_proxies=_networks(os.environ.get("TRUSTED_PROXIES", "")),
             cookie_secure=cookie,
             group_threshold=_float("GROUP_SIMILARITY", 0.88),
-            knn_threshold=_float("KNN_SIMILARITY", 0.85),
+            knn_threshold=_float("KNN_SIMILARITY", 0.90),
             backup_keep=_int("BACKUP_KEEP", 7, 0),
             build=os.environ.get("PAPYRUS_BUILD", "dev"),
         )

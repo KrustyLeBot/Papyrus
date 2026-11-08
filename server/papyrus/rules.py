@@ -44,6 +44,21 @@ class Rules:
     types: list[TypeRule]
     blacklist: set[tuple[str, str]]
     source: str
+    # tag -> patterns: a tag given to any document whose text holds one of its words, whatever its type
+    tag_rules: list = field(default_factory=list)
+
+    def content_tags(self, text: str, title: str = "") -> list[str]:
+        """Tags from the words of the document: a word counts when it is in the title or the first 4000 characters,
+        or comes back at least twice in the text (one stray mention deep in a long text is not a subject)."""
+        head = fold(title + "\n" + text[:4000])
+        full = fold(text[:100_000])
+        out = []
+        for tag, patterns in self.tag_rules:
+            for pattern in patterns:
+                if pattern.search(head) or len(pattern.findall(full)) >= 2:
+                    out.append(tag)
+                    break
+        return out
 
     def by_name(self, name: str) -> TypeRule | None:
         for t in self.types:
@@ -109,7 +124,16 @@ def parse(text: str, source: str) -> Rules:
     for entry in raw.get("blacklist") or []:
         if isinstance(entry, dict) and entry.get("key") and entry.get("value"):
             blacklist.add((str(entry["key"]), fold(str(entry["value"])).strip()))
-    return Rules(types=types, blacklist=blacklist, source=source)
+    tag_rules = []
+    raw_tags = raw.get("tag_keywords")
+    if raw_tags is not None and not isinstance(raw_tags, dict):
+        raise RulesError(f"{source}: « tag_keywords: » doit associer un tag à une liste de mots")
+    for tag, words in (raw_tags or {}).items():
+        if isinstance(words, str):
+            words = [words]
+        tag_rules.append((str(tag), [_pattern(str(w)) for w in words if str(w).strip()]))
+    return Rules(types=types, blacklist=blacklist, source=source, tag_rules=tag_rules,
+                 )
 
 
 class RulesStore:
@@ -121,9 +145,13 @@ class RulesStore:
         self._rules = self._load()
 
     def _load(self) -> Rules:
-        if self.custom.is_file():
-            return parse(self.custom.read_text(encoding="utf-8"), str(self.custom))
-        return parse(DEFAULT_PATH.read_text(encoding="utf-8"), "règles par défaut")
+        default = parse(DEFAULT_PATH.read_text(encoding="utf-8"), "règles par défaut")
+        if not self.custom.is_file():
+            return default
+        custom = parse(self.custom.read_text(encoding="utf-8"), str(self.custom))
+        if "tag_keywords" not in (yaml.safe_load(self.custom.read_text(encoding="utf-8")) or {}):
+            custom.tag_rules = default.tag_rules  # an older custom file keeps the shipped content tags
+        return custom
 
     @property
     def rules(self) -> Rules:

@@ -34,12 +34,14 @@ _EN_LONG = re.compile(rf"(?<![a-z0-9])({_MONTH_RE})\.?\s+(\d{{1,2}})(?:st|nd|rd|
 
 _KEYWORDS = [
     (re.compile(r"date de paiement|paye le|paiement le|verse le"), 5),
-    (re.compile(r"periode|mois de|pour le mois|du\s*$|au\s*$|salaire de"), 4),
+    (re.compile(r"periode|mois de|pour le mois|salaire de"), 4),
+    # a letter's dateline: "Grenoble, le 13 juillet 2017" (a place, a comma, "le")
+    (re.compile(r"(?:^|\n)\s*[a-z][a-z' -]{1,30},\s*le\s*$"), 4),
     (re.compile(r"fait (?:a [^\n,]{1,30},? )?le|emis le|emise le|etabli le|etablie le|signe le|en date du|date d'emission|date de facture|date du document|date facture|invoice date|dated?"), 4),
     (re.compile(r"echeance|date limite|a payer avant"), 3),
     (re.compile(r"\bdate\b|\ble\s*$"), 2),
 ]
-_NEGATIVE = re.compile(r"ne\(?e?\)? le|date de naissance|naissance|born|depuis le|entree le|date d'entree|anciennete|valable jusqu|expire|validite")
+_NEGATIVE = re.compile(r"a compter d[ue]|a partir d[ue]|prend effet|ne\(?e?\)? le|date de naissance|naissance|born|depuis le|entree le|date d'entree|anciennete|valable jusqu|expire|validite")
 
 
 def _year(y: str) -> int:

@@ -76,7 +76,7 @@ class Processor:
     def auto_tags(self, doc_id: int) -> None:
         """Year, types, the main entity's name and the rules' tags; tags added by hand are never removed."""
         conn = self.db.conn
-        row = conn.execute("SELECT doc_date, types FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        row = conn.execute("SELECT doc_date, types, title, text FROM documents WHERE id = ?", (doc_id,)).fetchone()
         conn.execute("DELETE FROM doc_tags WHERE doc_id = ? AND source = 'auto'", (doc_id,))
         names: list[str] = []
         if row["doc_date"]:
@@ -88,6 +88,7 @@ class Processor:
             if not any(fold(t) and (fold(type_name).startswith(fold(t)) or fold(t).startswith(fold(type_name))) for t in rule_tags):
                 names.append(type_name.lower())
             names.extend(rule_tags)
+        names.extend(self.rules.rules.content_tags(row["text"], row["title"]))
         entity = conn.execute("SELECT label FROM doc_keys WHERE doc_id = ? AND key IN ('employer_name', 'company') "
                               "ORDER BY CASE key WHEN 'employer_name' THEN 0 ELSE 1 END, rowid LIMIT 1", (doc_id,)).fetchone()
         if entity and entity["label"]:

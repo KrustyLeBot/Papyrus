@@ -79,3 +79,9 @@ def test_masking_leaves_invalid_numbers_alone():
 def test_swiss_avs_masked():
     text, found = ident.mask_sensitive("N° AVS 756.1234.5678.97")
     assert found and "1234.5678" not in text
+
+
+def test_letter_date_beats_contract_start_date():
+    text = ("Monsieur,\nGrenoble, le 13 juillet 2017\nCONTRAT DE TRAVAIL\n"
+            "- à compter du 02 août 2017.\nVotre mission s'achèvera le 27 août 2017.")
+    assert dates.detect(text, TODAY) == dt.date(2017, 7, 13)
