@@ -41,7 +41,7 @@
     if (e.ctrlKey || e.metaKey || e.altKey || typing(e) || $paletteOpen || $uploadOpen || document.querySelector('[role=dialog]')) return;
     if (chord === 'g') {
       clearTimeout(chordTimer); chord = null;
-      const to = { t: '/', s: '/search', g: '/groups' }[e.key];
+      const to = { t: '/', g: '/groups' }[e.key];
       if (to) { e.preventDefault(); navigate(to); }
       return;
     }
@@ -69,8 +69,7 @@
         <div class="banner"><span class="icon"><Icon name="alert" /></span>Mode dégradé : le modèle d'embeddings n'est pas disponible. La recherche plein texte et le classement par règles fonctionnent ; la recherche par sens et les documents similaires reviendront avec le modèle.</div>
       {/if}
       <main id="main">
-        {#if $route.name === 'timeline'}<Timeline />
-        {:else if $route.name === 'search'}<Search />
+        {#if $route.name === 'timeline'}{#if $route.query.q}<Search />{:else}<Timeline />{/if}
         {:else if $route.name === 'groups'}<Groups />
         {:else if $route.name === 'document'}{#key $route.params.id}<Document />{/key}
         {:else if $route.name === 'unlock'}<Unlock />
@@ -81,7 +80,6 @@
   </div>
   <nav class="tabs" aria-label="Navigation mobile">
     <button class:on={tab === 'timeline'} on:click={() => navigate('/')}><Icon name="clock" size={20} />Chronologie</button>
-    <button class:on={tab === 'search'} on:click={() => navigate('/search')}><Icon name="search" size={20} />Recherche</button>
     <button class:on={tab === 'groups'} on:click={() => navigate('/groups')}><Icon name="folder" size={20} />Groupes</button>
   </nav>
   <button class="fab" on:click={() => uploadOpen.set(true)} aria-label="Importer des documents"><Icon name="upload" size={18} />Importer</button>

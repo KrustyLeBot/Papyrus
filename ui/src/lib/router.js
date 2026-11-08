@@ -6,7 +6,7 @@ function parse(url) {
   const query = Object.fromEntries(url.searchParams);
   let m;
   if (path === '/') return { name: 'timeline', params: {}, query };
-  if (path === '/search') return { name: 'search', params: {}, query };
+  if (path === '/search') return { name: 'timeline', params: {}, query }; // the search bar filters the timeline
   if (path === '/groups') return { name: 'groups', params: {}, query };
   if ((m = path.match(/^\/groups\/(\d+)$/))) return { name: 'groups', params: { id: +m[1] }, query };
   if ((m = path.match(/^\/documents\/(\d+)$/))) return { name: 'document', params: { id: +m[1] }, query };

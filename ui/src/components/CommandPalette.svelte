@@ -12,7 +12,6 @@
   $: actions = [
     { label: 'Importer des documents', hint: 'u', run: () => uploadOpen.set(true) },
     { label: 'Aller à la chronologie', hint: 'g t', run: () => navigate('/') },
-    { label: 'Aller à la recherche', hint: '/', run: () => navigate('/search') },
     { label: 'Aller aux groupes', hint: 'g g', run: () => navigate('/groups') },
     ...($queue.locked ? [{ label: `Déverrouiller les PDF protégés (${$queue.locked})`, run: () => navigate('/unlock') }] : []),
     { label: 'Ouvrir l\'administration', run: () => navigate('/admin') },
@@ -27,7 +26,7 @@
     ...shownActions.map((a) => ({ section: 'Actions', label: a.label, hint: a.hint, run: a.run })),
     ...shownGroups.map((g) => ({ section: 'Groupes', label: groupPath($groups, g.id), hint: String(g.total), run: () => navigate(`/groups/${g.id}`) })),
     ...docs.map((d) => ({ section: 'Documents', label: d.title, hint: `${d.groups[0]?.path || ''} · ${formatDate(d.date)}`, run: () => navigate(`/documents/${d.id}`) })),
-    ...(needle.length > 1 ? [{ section: 'Recherche', label: `Rechercher « ${q.trim()} » dans tous les documents`, run: () => navigate(`/search?q=${encodeURIComponent(q.trim())}`) }] : []),
+    ...(needle.length > 1 ? [{ section: 'Recherche', label: `Rechercher « ${q.trim()} » dans tous les documents`, run: () => navigate(`/?q=${encodeURIComponent(q.trim())}`) }] : []),
   ];
   $: if (index >= entries.length) index = Math.max(0, entries.length - 1);
 

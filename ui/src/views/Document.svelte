@@ -118,6 +118,14 @@
             <span><span>Verrouiller le classement</span><span class="muted small block">Le reclassement automatique ne touchera plus ce document.</span></span></label>
         </div>
 
+        {#if doc.summary}
+          <div class="blk">
+            <h3>Aperçu du contenu</h3>
+            <p class="digest">{doc.summary}</p>
+            <p class="muted small">Phrases extraites du texte du document, pas générées.</p>
+          </div>
+        {/if}
+
         {#if shownKeys.length || doc.sensitive.length}
           <div class="blk">
             <h3>Identifiants détectés</h3>
@@ -188,6 +196,7 @@
   .row { display: flex; gap: 10px; align-items: center; }
   .date { max-width: 150px; }
   .small { font-size: 12.5px; }
+  .digest { font-size: 13.5px; line-height: 1.55; }
   .block { display: block; }
   .err { color: var(--danger); font-size: 12.5px; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }

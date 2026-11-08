@@ -46,6 +46,11 @@
       {/if}
     </section>
     <section>
+      <h2>Réanalyse</h2>
+      <p class="muted">Après une mise à jour de Papyrus : relit chaque document (OCR, orientation, date, titre, mots-clés, aperçu, groupes). Les groupes, tags, titres et dates que tu as réglés à la main sont conservés. Les documents sont traités un par un.</p>
+      <div class="btns"><button class="btn small" disabled={busy === 'all'} on:click={() => action('all', '/admin/reprocess-all', (r) => `${plural(r.documents, 'document mis', 'documents mis')} en file d'analyse.`)}><Icon name="refresh" />Réanalyser tous les documents</button></div>
+    </section>
+    <section>
       <h2>Modèle d'embeddings</h2>
       <dl><dt>État</dt><dd>{MODEL[s.model.status]}</dd>
         {#if s.model.missing_embeddings}<dt>À calculer</dt><dd>{plural(s.model.missing_embeddings, 'document sans empreinte', 'documents sans empreinte')}</dd>{/if}</dl>

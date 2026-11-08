@@ -14,7 +14,9 @@ from .embed import Embedder
 
 RRF_K = 60
 SEMANTIC_TOP = 50
-SEMANTIC_FLOOR = 0.78  # below this, e5 similarities mean "unrelated"
+# multilingual-e5-small: a related document scores 0.86-0.89 against a query, an unrelated one 0.77-0.84 (measured on
+# payslips, contracts, a diploma, invoices, a manual): below this, a result is noise, not a match
+SEMANTIC_FLOOR = 0.86
 _MARK_OPEN, _MARK_CLOSE = "\x02", "\x03"
 
 

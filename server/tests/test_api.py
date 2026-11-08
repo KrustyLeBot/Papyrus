@@ -121,7 +121,7 @@ def test_search_accents_prefix_phrase_and_filters(client, services, tmp_path, no
     upload(client, a)
     upload(client, b)
     drain(services)
-    titles = lambda q, **kw: [d["title"] for d in client.get("/api/search", params={"q": q, **kw}).json()["items"]]
+    titles = lambda q, **kw: [d["original_name"][0].upper() for d in client.get("/api/search", params={"q": q, **kw}).json()["items"]]
     assert titles("electricite") == ["A"]              # accents ignored
     assert titles("fact*") == ["A"]                    # prefix
     assert titles('"periode d\'essai"') == ["B"]       # phrase
@@ -215,3 +215,17 @@ def test_diploma_is_typed_and_tagged(client, services, tmp_path, no_model):
     doc = client.get(f"/api/documents/{doc['id']}").json()
     assert [g["path"] for g in doc["groups"]] == ["Études"]
     assert {"diplôme", "2015"} <= {t["name"] for t in doc["tags"]}
+
+
+def test_reprocess_all_keeps_what_was_set_by_hand(client, services, tmp_path, no_model):
+    f = tmp_path / "scan0001.txt"
+    f.write_text("ATTESTATION DE STAGE\nNous attestons que le stagiaire a effectue un stage de six semaines.", encoding="utf-8")
+    doc_id = upload(client, f)["id"]
+    drain(services)
+    client.post(f"/api/documents/{doc_id}/tags", json={"name": "perso"})
+    client.patch(f"/api/documents/{doc_id}", json={"doc_date": "2020-01-02"})
+    assert client.post("/api/admin/reprocess-all").json()["documents"] == 1
+    assert client.get("/api/queue").json()["items"][0]["status"] == "pending"
+    drain(services)
+    doc = client.get(f"/api/documents/{doc_id}").json()
+    assert doc["status"] == "done" and doc["date"] == "2020-01-02" and "perso" in {t["name"] for t in doc["tags"]}

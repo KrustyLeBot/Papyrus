@@ -79,6 +79,9 @@ def test_group_tree_with_model(client, services, tmp_path):
     assert sim and sim[0]["score"] > 0.8
     hits = client.get("/api/search", params={"q": "bulletin de paie"}).json()
     assert hits["semantic"] and hits["items"]
+    # only real matches: an invoice or a property paper is not an answer to "bulletin de paie"
+    groups = {g["path"].split(" / ")[0] for d in hits["items"] for g in d["groups"]}
+    assert groups <= {"Fiches de paie", "Emploi"}, groups
 
 
 def test_manual_assignment_survives_reclassification_and_teaches(client, services, tmp_path, no_model):

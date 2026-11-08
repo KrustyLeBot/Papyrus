@@ -9,7 +9,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import dates, extract, identifiers, thumbs
+from . import dates, extract, identifiers, summary as summarizer, thumbs
 from .config import Config
 from .db import Database, blob_to_vec, vec_to_blob
 from .embed import Embedder
@@ -73,6 +73,27 @@ class Processor:
         self.auto_tags(doc_id)
         return names
 
+    def content(self, doc_id: int, text: str, title: str) -> tuple[list[str], str]:
+        """Distinctive keywords and the extractive summary of a document, against what the archive already holds."""
+        counts, forms = summarizer.term_stats(text)
+        if not counts:
+            return [], summarizer.extractive_summary(text, {})
+        conn = self.db.conn
+        n_docs = conn.execute("SELECT COUNT(*) FROM documents WHERE status = 'done' AND id != ?", (doc_id,)).fetchone()[0]
+        terms = list(counts)
+        freq: dict[str, int] = {}
+        for i in range(0, len(terms), 400):
+            chunk = terms[i:i + 400]
+            marks = ",".join("?" * len(chunk))
+            for r in conn.execute(f"SELECT term, doc FROM docs_vocab WHERE col = 'body' AND term IN ({marks})", chunk):
+                freq[r["term"]] = r["doc"]
+        # the document itself is in the index when it is analysed again: it is not "another document" holding the word
+        own = conn.execute("SELECT 1 FROM docs_fts WHERE rowid = ?", (doc_id,)).fetchone()
+        if own:
+            freq = {t: max(0, n - 1) for t, n in freq.items()}
+        scores = summarizer.term_scores(counts, freq, n_docs)
+        return (summarizer.keywords(text, title, counts, forms, scores), summarizer.extractive_summary(text, scores))
+
     def auto_tags(self, doc_id: int) -> None:
         """Year, types, the main entity's name and the rules' tags; tags added by hand are never removed."""
         conn = self.db.conn
@@ -89,6 +110,9 @@ class Processor:
                 names.append(type_name.lower())
             names.extend(rule_tags)
         names.extend(self.rules.rules.content_tags(row["text"], row["title"]))
+        found, digest = self.content(doc_id, row["text"], row["title"])
+        names.extend(found)
+        conn.execute("UPDATE documents SET summary = ? WHERE id = ?", (digest, doc_id))
         entity = conn.execute("SELECT label FROM doc_keys WHERE doc_id = ? AND key IN ('employer_name', 'company') "
                               "ORDER BY CASE key WHEN 'employer_name' THEN 0 ELSE 1 END, rowid LIMIT 1", (doc_id,)).fetchone()
         if entity and entity["label"]:
@@ -135,9 +159,14 @@ class Processor:
             found = dates.detect(text, today=max(dt.date.today(), upload_day))
             doc_date, source = (found.isoformat(), "detected") if found else (upload_day.isoformat(), "upload")
 
+        title = row["title"]
+        if not row["title_manual"] and summarizer.is_junk_name(Path(row["original_name"]).stem):
+            title = summarizer.derive_title(text) or title  # scan0012.pdf → the heading the document carries
+
         with self.db.tx():
-            conn.execute("UPDATE documents SET text = ?, pages = ?, ocr = ?, doc_date = ?, date_source = ?, updated_at = ? "
-                         "WHERE id = ?", (text, result.pages, int(result.ocr), doc_date, source, now(), doc_id))
+            conn.execute("UPDATE documents SET title = ?, text = ?, pages = ?, ocr = ?, doc_date = ?, date_source = ?, "
+                         "updated_at = ? WHERE id = ?",
+                         (title, text, result.pages, int(result.ocr), doc_date, source, now(), doc_id))
             conn.execute("DELETE FROM doc_keys WHERE doc_id = ?", (doc_id,))
             for key in identifiers.extract(text, int(doc_date[:4])):
                 conn.execute("INSERT OR IGNORE INTO doc_keys(doc_id, key, value, label) VALUES (?, ?, ?, ?)",

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS documents (
     unlocked_at     TEXT,
     suggestions     TEXT NOT NULL DEFAULT '[]',
     suggestion_applied INTEGER NOT NULL DEFAULT 0,
+    summary         TEXT NOT NULL DEFAULT '',
     embedding       BLOB,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
@@ -118,6 +119,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
     title, body, filename, tags,
     tokenize = 'unicode61 remove_diacritics 2'
 );
+
+-- how many documents hold each word of the body (the IDF of the keyword scores)
+CREATE VIRTUAL TABLE IF NOT EXISTS docs_vocab USING fts5vocab(docs_fts, col);
 """
 
 
@@ -129,6 +133,9 @@ class Database:
         self._lock = threading.Lock()
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            columns = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
+            if "summary" not in columns:  # a database made before the summaries existed
+                conn.execute("ALTER TABLE documents ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def _open(self) -> sqlite3.Connection:

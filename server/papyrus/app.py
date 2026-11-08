@@ -264,6 +264,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
                 "types": json.loads(r["types"] or "[]"),
                 "thumb": f"/api/documents/{r['id']}/thumb?v={quote(r['updated_at'])}" if r["status"] == "done" else None,
                 "locked": bool(r["locked"]), "suggestion_applied": bool(r["suggestion_applied"]),
+                "summary": r["summary"] if full else (r["summary"] or "")[:200],
             }
             if full:
                 item.update({
@@ -325,7 +326,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         total = db.conn.execute(f"SELECT COUNT(*) FROM documents {where}", params).fetchone()[0]
         rows = db.conn.execute(
             f"SELECT id, title, doc_date, date_source, created_at, updated_at, status, ext, pages, size, original_name, "
-            f"error, types, locked, suggestion_applied FROM documents {where} "
+            f"error, types, locked, suggestion_applied, summary FROM documents {where} "
             f"ORDER BY COALESCE(doc_date, substr(created_at, 1, 10)) DESC, id DESC LIMIT ? OFFSET ?",
             params + [limit, offset]).fetchall()
         return {"items": serialize(rows), "total": total, "offset": offset, "limit": limit}
@@ -721,6 +722,15 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     def retry_errors(_u: str = Depends(user)):
         with db.tx():
             n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE status = 'error'").rowcount
+        svc.worker.wake()
+        return {"ok": True, "documents": n}
+
+    @app.post("/api/admin/reprocess-all")
+    def reprocess_all(_u: str = Depends(user)):
+        """Analyses every document again (text, OCR orientation, date, title, keywords, summary, groups). Manual
+        groups, tags typed by hand, typed titles and dates, and locked documents keep what they have."""
+        with db.tx():
+            n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE status IN ('done', 'error')").rowcount
         svc.worker.wake()
         return {"ok": True, "documents": n}
 

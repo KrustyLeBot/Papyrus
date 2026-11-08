@@ -21,7 +21,7 @@
   <Thumb {doc} width={52} />
   <div class="main">
     <div class="title">{doc.title}</div>
-    {#if snippet}<div class="snippet muted">… {@html snippet} …</div>{/if}
+    {#if snippet}<div class="snippet muted">… {@html snippet} …</div>{:else if doc.summary}<div class="snippet muted one">{doc.summary}</div>{/if}
     <div class="chips">
       {#each shownGroups as g (g.id)}
         <span class="chip" title={g.path}><span class="dot" style="background:{g.color}"></span><span>{g.path}</span></span>
@@ -44,6 +44,7 @@
   .main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .title { font-weight: 600; font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .snippet { font-size: 13.5px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .snippet.one { -webkit-line-clamp: 1; line-clamp: 1; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-width: 0; }
   .how { font-size: 12px; }
   .meta { font-size: 13px; white-space: nowrap; }

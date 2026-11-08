@@ -47,7 +47,6 @@
   </a>
   <nav aria-label="Navigation principale">
     <a class="nav" class:on={nav('timeline')} href="/" use:link on:click={go}><Icon name="clock" />Chronologie<span class="k">g t</span></a>
-    <a class="nav" class:on={nav('search')} href="/search" use:link on:click={go}><Icon name="search" />Recherche<span class="k">/</span></a>
     <a class="nav" class:on={nav('groups') && !$route.params.id} href="/groups" use:link on:click={go}><Icon name="folder" />Groupes<span class="k">g g</span></a>
     {#if $queue.locked > 0}
       <a class="nav" class:on={nav('unlock')} href="/unlock" use:link on:click={go}><Icon name="lock" />À déverrouiller<span class="badge">{$queue.locked}</span></a>

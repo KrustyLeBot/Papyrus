@@ -33,13 +33,13 @@
   function set(k, v) {
     const p = new URLSearchParams($route.query);
     if (v === '' || v === false || v == null) p.delete(k); else p.set(k, v === true ? '1' : v);
-    navigate('/search?' + p, { replace: true });
+    navigate('/?' + p, { replace: true });
   }
   $: hasFilter = group || tag || type || from || to;
 </script>
 
 <div class="page">
-  <header><h1>{q ? `Résultats pour « ${q} »` : 'Recherche'}</h1></header>
+  <header><h1>Résultats pour « {q} »</h1><button class="btn ghost small" on:click={() => navigate('/' + qs({ group, year: '' }))}>Revenir à la chronologie</button></header>
   <div class="filters" role="group" aria-label="Filtres">
     <select class="filter" aria-label="Groupe" value={group} on:change={(e) => set('group', e.target.value)}>
       <option value="">Tous les groupes</option>
@@ -55,7 +55,7 @@
     </select>
     <label class="filter date"><span>Du</span><input type="date" value={from} on:change={(e) => set('from', e.target.value)} /></label>
     <label class="filter date"><span>au</span><input type="date" value={to} on:change={(e) => set('to', e.target.value)} /></label>
-    {#if hasFilter}<button class="btn ghost small" on:click={() => navigate('/search' + qs({ q, exact }))}>Effacer les filtres</button>{/if}
+    {#if hasFilter}<button class="btn ghost small" on:click={() => navigate('/' + qs({ q, exact }))}>Effacer les filtres</button>{/if}
     <label class="exact"><input type="checkbox" checked={exact} on:change={(e) => set('exact', e.target.checked)} />Exact seulement</label>
   </div>
 
