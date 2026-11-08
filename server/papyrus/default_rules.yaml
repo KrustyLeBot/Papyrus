@@ -111,6 +111,16 @@ types:
     subgroup_by: []
     tags: [identité]
 
+  - name: Études
+    color: "#4C8DF6"
+    keywords: {"diplôme": 3, "baccalauréat": 4, "relevé de notes": 4, "certificat de scolarité": 4, "licence": 1,
+               "master": 1, "université": 2, "académie": 1, "mention": 1, "attestation de réussite": 4,
+               "ministère de l'éducation": 3, "enseignement supérieur": 2, "jury": 1, "bulletin scolaire": 3,
+               "école": 1, "formation": 1, "diploma": 3}
+    threshold: 4
+    subgroup_by: []
+    tags: [diplôme, études]
+
   - name: Emploi
     color: "#2FB59B"
     keywords: {"contrat de travail": 4, "période d'essai": 3, "avenant": 2, "lettre de démission": 4,
@@ -127,6 +137,7 @@ tag_keywords:
   contrat: ["contrat", "contract", "avenant"]
   devis: ["devis", "estimate", "offre de prix"]
   facture: ["facture", "invoice", "rechnung"]
+  diplôme: ["diplôme", "diplome", "baccalauréat", "diploma"]
   attestation: ["attestation"]
   certificat: ["certificat", "certificate"]
   garantie: ["garantie", "warranty"]

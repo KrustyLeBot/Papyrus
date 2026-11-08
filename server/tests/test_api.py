@@ -204,3 +204,14 @@ def test_content_tags_from_keywords_without_any_type(client, services, tmp_path,
     assert {"notice", "garantie"} <= names
     assert [g["path"] for g in doc["groups"]] == ["À classer"]  # tags do not classify
     assert [d["id"] for d in client.get("/api/search", params={"q": "notice", "tag": "notice"}).json()["items"]] == [doc_id]
+
+
+def test_diploma_is_typed_and_tagged(client, services, tmp_path, no_model):
+    f = tmp_path / "scan.txt"
+    f.write_text("RÉPUBLIQUE FRANÇAISE\nMINISTÈRE DE L'ÉDUCATION NATIONALE\nACADÉMIE DE GRENOBLE\nDIPLÔME DU BACCALAURÉAT GÉNÉRAL\n"
+                 "Fait à Grenoble, le 22 Septembre 2015", encoding="utf-8")
+    doc = client.get(f"/api/documents/{upload(client, f)['id']}").json()
+    drain(services)
+    doc = client.get(f"/api/documents/{doc['id']}").json()
+    assert [g["path"] for g in doc["groups"]] == ["Études"]
+    assert {"diplôme", "2015"} <= {t["name"] for t in doc["tags"]}
