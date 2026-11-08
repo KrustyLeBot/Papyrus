@@ -242,7 +242,7 @@ class Processor:
         if progress:
             progress("Vignette")
         thumbs.make(path, row["ext"], cfg.thumbs_dir / f"{row['uuid']}.webp", text)
-        self._set_status(doc_id, "done", error=None, processed_at=now())
+        self._set_status(doc_id, "done", error=None, processed_at=now(), attempts=0)
 
 
 class Worker:
@@ -261,9 +261,17 @@ class Worker:
         self.embedded_version = -1
         self.last_backup_day: str | None = None
 
-    def start(self) -> None:
+    def recover_interrupted(self) -> None:
+        """Documents left « processing » by a stop or a crash go back to the queue; one that was already tried and cut
+        short twice (the process was killed on it: out of memory, say) is set aside as an error instead of looping."""
         with self.db.tx():
+            self.db.conn.execute("UPDATE documents SET status = 'error', updated_at = ?, error = ? WHERE status = 'processing' "
+                                 "AND attempts >= 2", (now(), "L'analyse de ce fichier a interrompu Papyrus deux fois de suite "
+                                                       "(mémoire insuffisante ?) : il est mis de côté. « Relancer l'analyse » pour réessayer."))
             self.db.conn.execute("UPDATE documents SET status = 'pending' WHERE status = 'processing'")
+
+    def start(self) -> None:
+        self.recover_interrupted()
         self.thread = threading.Thread(target=self._loop, name="papyrus-worker", daemon=True)
         self.thread.start()
 
@@ -296,7 +304,7 @@ class Worker:
             return False
         doc_id = row["id"]
         with self.db.tx():
-            conn.execute("UPDATE documents SET status = 'processing' WHERE id = ?", (doc_id,))
+            conn.execute("UPDATE documents SET status = 'processing', attempts = attempts + 1 WHERE id = ?", (doc_id,))
         self.current = {"id": doc_id, "title": row["title"], "step": "Extraction du texte", "started": time.time()}
         try:
             self.processor.process(doc_id, self._progress)

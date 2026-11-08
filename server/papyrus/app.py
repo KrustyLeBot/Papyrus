@@ -338,7 +338,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         if row["status"] in ("password_required", "missing"):
             raise _err(409, "Ce document n'est pas analysable pour l'instant (mot de passe ou fichier introuvable).")
         with db.tx():
-            db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE id = ?", (doc_id,))
+            db.conn.execute("UPDATE documents SET status = 'pending', error = NULL, attempts = 0 WHERE id = ?", (doc_id,))
         svc.worker.wake()
         return {"ok": True}
 
@@ -540,7 +540,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     @app.post("/api/admin/retry-errors")
     def retry_errors(_u: str = Depends(user)):
         with db.tx():
-            n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE status = 'error'").rowcount
+            n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL, attempts = 0 WHERE status = 'error'").rowcount
         svc.worker.wake()
         return {"ok": True, "documents": n}
 
@@ -549,7 +549,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         """Analyses every document again (text, OCR orientation, date, title, keywords, summary). Titles and dates typed
         by hand, and tags typed by hand, are kept."""
         with db.tx():
-            n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE status IN ('done', 'error', 'password_required')").rowcount
+            n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL, attempts = 0 WHERE status IN ('done', 'error', 'password_required')").rowcount
         svc.worker.wake()
         return {"ok": True, "documents": n}
 

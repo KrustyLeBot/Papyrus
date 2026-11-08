@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import zipfile
@@ -61,7 +62,15 @@ def sniff_ext(head: bytes, filename: str) -> str | None:
     return None
 
 
-def _run(cmd: list[str], env: dict | None = None, timeout: int = 600) -> bytes:
+# Tesseract and pdftoppm run under this ceiling (virtual memory, via prlimit): a page that would eat the container's memory
+# makes its own document fail with a clear message instead of getting the whole container killed (and restarted onto the
+# same page, forever). 0 = no ceiling.
+MEMORY_LIMIT_MB = 2048
+
+
+def _run(cmd: list[str], env: dict | None = None, timeout: int = 600, limit_mb: int | None = None) -> bytes:
+    if limit_mb and shutil.which("prlimit"):
+        cmd = ["prlimit", f"--as={limit_mb * 1024 * 1024}", *cmd]
     try:
         done = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env, check=False)
     except FileNotFoundError:
@@ -70,7 +79,9 @@ def _run(cmd: list[str], env: dict | None = None, timeout: int = 600) -> bytes:
         raise ExtractError(f"{cmd[0]} : délai dépassé") from None
     if done.returncode != 0:
         message = done.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise ExtractError(f"{cmd[0]} : {message[-1] if message else 'échec'}")
+        if limit_mb and (done.returncode in (-9, -11, -6) or any("memory" in m.lower() or "alloc" in m.lower() for m in message)):
+            raise ExtractError(f"page trop lourde pour la mémoire autorisée ({limit_mb} Mo) : OCR abandonné (OCR_MEMORY_MB)")
+        raise ExtractError(f"{cmd[-1] if cmd[0] == 'prlimit' else cmd[0]} : {message[-1] if message else 'échec'}")
     return done.stdout
 
 
@@ -85,7 +96,7 @@ def detect_rotation(image: Path, threads: int) -> int:
     detection (osd). 0 when it cannot tell (too little text) or is not confident."""
     env = dict(os.environ, OMP_THREAD_LIMIT=str(threads))
     try:
-        out = _run(["tesseract", str(image), "stdout", "--psm", "0", "-l", "osd"], env=env, timeout=120).decode("utf-8", "replace")
+        out = _run(["tesseract", str(image), "stdout", "--psm", "0", "-l", "osd"], env=env, timeout=120, limit_mb=MEMORY_LIMIT_MB).decode("utf-8", "replace")
     except ExtractError:
         return 0
     angle = re.search(r"Rotate:\s*(\d+)", out)
@@ -105,10 +116,10 @@ def ocr_image(image: Path, langs: str, threads: int) -> str:
         Image.MAX_IMAGE_PIXELS = 200_000_000  # our own rendering, capped above: no "decompression bomb" warning
         with Image.open(image) as img:
             img.rotate(-angle, expand=True, fillcolor=255 if img.mode == "L" else (255, 255, 255)).save(image)
-    return _run(["tesseract", str(image), "stdout", "-l", langs, "--psm", "3"], env=env).decode("utf-8", "replace")
+    return _run(["tesseract", str(image), "stdout", "-l", langs, "--psm", "3"], env=env, limit_mb=MEMORY_LIMIT_MB).decode("utf-8", "replace")
 
 
-MAX_OCR_PIXELS = 60_000_000  # a plan or a poster at 300 dpi is 100+ megapixels: Tesseract would take forever
+MAX_OCR_PIXELS = 40_000_000  # a plan or a poster at 300 dpi is 100+ megapixels: gigabytes and minutes for Tesseract
 MIN_OCR_DPI = 100
 
 
@@ -131,7 +142,7 @@ def page_dpi(path: Path, page: int, wanted: int = 300) -> int:
 def _ocr_pdf_page(path: Path, page: int, langs: str, threads: int, workdir: Path) -> str:
     prefix = workdir / f"p{page}"
     _run(["pdftoppm", "-r", str(page_dpi(path, page)), "-gray", "-png", "-f", str(page), "-l", str(page), "-singlefile",
-          str(path), str(prefix)])
+          str(path), str(prefix)], limit_mb=MEMORY_LIMIT_MB)
     image = prefix.with_suffix(".png")
     try:
         return ocr_image(image, langs, threads)

@@ -19,6 +19,9 @@ class Services:
     def __init__(self, config: Config, start_worker: bool = False):
         self.config = config
         config.ensure_dirs()
+        from . import extract
+
+        extract.MEMORY_LIMIT_MB = config.ocr_memory_mb
         self.db = Database(config.db_path, config.journal, config.locking)
         self.rules = RulesStore(config.rules_path)
         baked = Path("/opt/papyrus/models")

@@ -91,6 +91,7 @@ class Config:
     settle_seconds: int = 5
     ocr_threads: int = 2
     ocr_max_pages: int = 0
+    ocr_memory_mb: int = 2048
     ocr_langs: str = "fra+eng"
     embed_threads: int = 2
     embed_model: str = "small"
@@ -160,6 +161,7 @@ class Config:
             settle_seconds=_int("SCAN_SETTLE_SEC", 5, 0),
             ocr_threads=_int("OCR_THREADS", 2, 1, 16),
             ocr_max_pages=_int("OCR_MAX_PAGES", 0, 0),
+            ocr_memory_mb=_int("OCR_MEMORY_MB", 2048, 0),
             ocr_langs=os.environ.get("OCR_LANGS", "fra+eng").strip() or "fra+eng",
             embed_threads=_int("EMBED_THREADS", 2, 1, 16),
             embed_model=_embed_model(),

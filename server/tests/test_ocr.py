@@ -2,7 +2,7 @@ import pytest
 from PIL import Image
 
 from . import docgen
-from .conftest import MODEL_DIR, requires_tesseract, upload
+from .conftest import MODEL_DIR, drain, requires_tesseract, upload
 
 
 @requires_tesseract
@@ -86,3 +86,35 @@ def test_a_poster_sized_scan_is_read_without_a_bomb_warning(client, services, tm
     r = upload(client, path)
     assert client.get(f"/api/documents/{r['id']}").json()["status"] == "done"
     assert not [w for w in recwarn if "DecompressionBomb" in str(w.category)]
+
+
+def test_a_runaway_tool_is_stopped_by_the_memory_ceiling(tmp_path):
+    import shutil
+
+    from papyrus import extract
+
+    if not shutil.which("prlimit"):
+        pytest.skip("prlimit not installed")
+    with pytest.raises(extract.ExtractError, match="mémoire"):
+        extract._run(["python3", "-c", "x = bytearray(800 * 1024 * 1024); print(len(x))"], limit_mb=300)
+    assert extract._run(["python3", "-c", "print('ok')"], limit_mb=300).strip() == b"ok"
+
+
+def test_a_document_that_keeps_killing_the_process_is_set_aside(client, services, tmp_path, no_model):
+    f = tmp_path / "plan.txt"
+    f.write_text("Facture n° 1\nTotal TTC 12,00", encoding="utf-8")
+    doc_id = upload(client, f)["id"]
+    db = services.db
+    # first interruption: back in the queue; second one: set aside with an explanation
+    db.conn.execute("UPDATE documents SET status = 'processing', attempts = 1 WHERE id = ?", (doc_id,))
+    services.worker.recover_interrupted()
+    assert db.conn.execute("SELECT status FROM documents WHERE id = ?", (doc_id,)).fetchone()[0] == "pending"
+    db.conn.execute("UPDATE documents SET status = 'processing', attempts = 2 WHERE id = ?", (doc_id,))
+    services.worker.recover_interrupted()
+    row = db.conn.execute("SELECT status, error FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    assert row["status"] == "error" and "interrompu" in row["error"]
+    # « Relancer l'analyse » starts again from zero, and a successful analysis resets the counter
+    assert client.post(f"/api/documents/{doc_id}/reprocess").status_code == 200
+    assert db.conn.execute("SELECT attempts FROM documents WHERE id = ?", (doc_id,)).fetchone()[0] == 0
+    drain(services)
+    assert db.conn.execute("SELECT status, attempts FROM documents WHERE id = ?", (doc_id,)).fetchone()[:] == ("done", 0)

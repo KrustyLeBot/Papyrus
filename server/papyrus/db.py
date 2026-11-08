@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS documents (
     processed_at    TEXT,
     unlocked_at     TEXT,
     missing_at      TEXT,
-    hidden          INTEGER NOT NULL DEFAULT 0   -- hidden by the user: kept, analysed, out of lists and search
+    hidden          INTEGER NOT NULL DEFAULT 0,  -- hidden by the user: kept, analysed, out of lists and search
+    attempts        INTEGER NOT NULL DEFAULT 0   -- analyses started and not finished (a crash while processing counts)
 );
 CREATE INDEX IF NOT EXISTS documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS documents_date ON documents(doc_date);
@@ -175,6 +176,8 @@ class Database:
                     conn.execute("SELECT name FROM sqlite_master WHERE name = 'doc_passwords'").fetchone():
                 conn.execute("DROP TABLE doc_passwords")  # saved under a key file, unreadable by the account-password key anyway
             conn.executescript(SCHEMA)
+            if "attempts" not in {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}:
+                conn.execute("ALTER TABLE documents ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
             if "hidden" not in {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}:  # a database from before « Masqués »
                 conn.execute("ALTER TABLE documents ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
