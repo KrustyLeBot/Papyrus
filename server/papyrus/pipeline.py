@@ -13,7 +13,7 @@ from pathlib import Path
 from . import dates, extract, identifiers, pdfcrypt, summary as summarizer, thumbs
 from .config import Config
 from .db import Database, vec_to_blob
-from .embed import Embedder
+from .embed import Embedder, _trim_memory as trim_memory
 from .rules import RulesStore
 from .text import fold
 
@@ -317,6 +317,7 @@ class Worker:
                              (message[:500], now(), doc_id))
         finally:
             self.current = None
+            trim_memory()  # give what the analysis freed back to the system (glibc keeps it otherwise)
         return True
 
     def _embed_missing(self) -> None:

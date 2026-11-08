@@ -217,6 +217,7 @@ class Embedder:
         options.intra_op_num_threads = self.threads
         options.inter_op_num_threads = 1
         options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False  # texts of every length: one cached memory plan per shape only grows the process
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self._session = ort.InferenceSession(str(directory / "model_quantized.onnx"), options,
                                              providers=["CPUExecutionProvider"])

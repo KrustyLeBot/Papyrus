@@ -377,3 +377,39 @@ def test_basic_auth_scripts_also_open_the_vault(secured):
     assert not svc.vault.is_unlocked("jerome")
     assert c.get("/api/documents", headers={"Authorization": f"Basic {token}"}).status_code == 200
     assert svc.vault.is_unlocked("jerome")
+
+
+def test_filter_lists_only_offer_what_exists_given_the_other_filters(client, services, tmp_path, no_model):
+    def doc(name, text, folder, day):
+        f = tmp_path / name
+        f.write_text(text, encoding="utf-8")
+        upload(client, f, name=f"{folder}/{name}")
+        return client.get("/api/documents", params={"limit": 50}).json()["items"]
+
+    doc("paie1.txt", "BULLETIN DE SALAIRE Période du 01/03/2019 au 31/03/2019\nSalaire brut 4 000\nCotisations 880\nNet à payer 3 000\nSalaire de base", "Travail", 0)
+    doc("paie2.txt", "BULLETIN DE SALAIRE Période du 01/03/2021 au 31/03/2021\nSalaire brut 4 100\nCotisations 890\nNet à payer 3 100\nSalaire de base", "Travail", 0)
+    doc("facture.txt", "FACTURE n° 7 Date de facture : 05/11/2024\nMontant HT 100 TVA 20 Total TTC 120", "Maison", 0)
+    facets = lambda **kw: client.get("/api/facets", params=kw).json()
+    everything = facets()
+    assert [y["year"] for y in everything["years"]] == ["2024", "2021", "2019"]
+    assert {t["name"] for t in everything["types"]} == {"Fiches de paie", "Factures"}
+    # a type narrows the years, a year narrows the types, a folder narrows both
+    assert [y["year"] for y in facets(type="Fiches de paie")["years"]] == ["2021", "2019"]
+    assert [t["name"] for t in facets(year="2024")["types"]] == ["Factures"]
+    assert [y["year"] for y in facets(folder="Maison")["years"]] == ["2024"]
+    # a filter never narrows its own list: with the type chosen, the other types stay available for that year
+    assert {t["name"] for t in facets(type="Fiches de paie", year="2021")["types"]} == {"Fiches de paie"}
+    assert {t["name"] for t in facets(type="Factures")["types"]} == {"Fiches de paie", "Factures"}
+    assert [y["year"] for y in facets(type="Fiches de paie", year="2021")["years"]] == ["2021", "2019"]
+    assert all(t["count"] >= 1 for t in everything["tags"])
+
+    # the same in the search results
+    r = client.get("/api/search", params={"q": "salaire"}).json()
+    assert [y["year"] for y in r["facets"]["years"]] == ["2021", "2019"] and [t["name"] for t in r["facets"]["types"]] == ["Fiches de paie"]
+    r = client.get("/api/search", params={"q": "salaire", "date_from": "2021-01-01", "date_to": "2021-12-31"}).json()
+    assert [d["original_name"] for d in r["items"]] == ["paie2.txt"] and r["total"] == 1
+    assert [y["year"] for y in r["facets"]["years"]] == ["2021", "2019"]          # the year list keeps its other years
+    r = client.get("/api/search", params={"q": "facture salaire", "type": "Factures"}).json()
+    assert r["items"] == []                                                       # every word is required
+    r = client.get("/api/search", params={"q": "total", "type": "Factures"}).json()
+    assert [d["original_name"] for d in r["items"]] == ["facture.txt"]

@@ -1,11 +1,13 @@
 <script>
-  import { route, navigate } from '../lib/router.js';
+  import { tick } from 'svelte';
+  import { route, navigate, takeRestore } from '../lib/router.js';
   import { docsVersion } from '../lib/stores.js';
   import { get, qs } from '../lib/api.js';
   import DocRow from '../components/DocRow.svelte';
   import Icon from '../components/Icon.svelte';
 
-  let items = [], total = 0, ms = 0, semantic = false, loading = false, error = '', ctl, tags = [], types = [], corrections = {};
+  let items = [], total = 0, ms = 0, semantic = false, loading = false, error = '', ctl, facets = { years: [], types: [], tags: [] }, corrections = {};
+  let restore = takeRestore();
   $: q = $route.query.q || '';
   $: exact = $route.query.exact === '1';
   $: folder = $route.query.folder || '';
@@ -14,8 +16,6 @@
   $: from = $route.query.from || '';
   $: to = $route.query.to || '';
 
-  get('/tags').then((r) => (tags = r.items.slice(0, 80))).catch(() => {});
-  get('/types').then((r) => (types = r.items)).catch(() => {});
 
   async function run(...deps) {
     ctl?.abort();
@@ -23,8 +23,9 @@
     loading = true; error = '';
     try {
       const r = await get('/search' + qs({ q, exact, folder, tag, type, date_from: from, date_to: to, limit: 60 }), { signal: ctl.signal });
-      items = r.items; total = r.total; ms = r.elapsed_ms ?? 0; semantic = !!r.semantic; corrections = r.corrections || {};
+      items = r.items; total = r.total; ms = r.elapsed_ms ?? 0; semantic = !!r.semantic; corrections = r.corrections || {}; facets = r.facets || facets;
       loading = false;
+      if (restore) { const y = restore.y; restore = null; await tick(); window.scrollTo(0, y); }
     } catch (e) { if (e.name !== 'AbortError') { error = e.message; loading = false; } }
   }
   $: run(q, exact, folder, tag, type, from, to, $docsVersion);
@@ -34,7 +35,16 @@
     if (v === '' || v === false || v == null) p.delete(k); else p.set(k, v === true ? '1' : v);
     navigate('/?' + p, { replace: true });
   }
+  $: year = from && to && from.slice(0, 4) === to.slice(0, 4) ? from.slice(0, 4) : '';
   $: hasFilter = tag || type || from || to;
+  // each list offers what exists given the other filters (the server counts it over the results of this search)
+  const withChosen = (list, value, key) => (value && !list.some((x) => x[key] === value) ? [...list, { [key]: value, count: 0 }] : list);
+  function setYear(v) {
+    const p = new URLSearchParams($route.query);
+    p.delete('from'); p.delete('to');
+    if (v) { p.set('from', `${v}-01-01`); p.set('to', `${v}-12-31`); }
+    navigate('/?' + p, { replace: true });
+  }
 </script>
 
 <div class="page">
@@ -42,14 +52,16 @@
   <div class="filters" role="group" aria-label="Filtres">
     <select class="filter" aria-label="Tag" value={tag} on:change={(e) => set('tag', e.target.value)}>
       <option value="">Tous les tags</option>
-      {#each tags as t (t.id)}<option value={t.name}>{t.name} ({t.count})</option>{/each}
+      {#each withChosen(facets.tags, tag, 'name') as t}<option value={t.name}>{t.name} ({t.count})</option>{/each}
     </select>
     <select class="filter" aria-label="Type" value={type} on:change={(e) => set('type', e.target.value)}>
       <option value="">Tous les types</option>
-      {#each types as t}<option value={t.name}>{t.name}</option>{/each}
+      {#each withChosen(facets.types, type, 'name') as t}<option value={t.name}>{t.name} ({t.count})</option>{/each}
     </select>
-    <label class="filter date"><span>Du</span><input type="date" value={from} on:change={(e) => set('from', e.target.value)} /></label>
-    <label class="filter date"><span>au</span><input type="date" value={to} on:change={(e) => set('to', e.target.value)} /></label>
+    <select class="filter" aria-label="Année" value={year} on:change={(e) => setYear(e.target.value)}>
+      <option value="">Toutes les années</option>
+      {#each withChosen(facets.years, year, 'year') as y}<option value={y.year}>{y.year} ({y.count})</option>{/each}
+    </select>
     {#if hasFilter}<button class="btn ghost small" on:click={() => navigate('/' + qs({ q, exact, folder }))}>Effacer les filtres</button>{/if}
     <label class="exact"><input type="checkbox" checked={exact} on:change={(e) => set('exact', e.target.checked)} />Exact seulement</label>
   </div>

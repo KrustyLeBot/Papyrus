@@ -1,34 +1,74 @@
 <script>
-  import { onDestroy, createEventDispatcher } from 'svelte';
-  import { get, qs } from '../lib/api.js';
+  import { onDestroy, tick, createEventDispatcher } from 'svelte';
+  import { get } from '../lib/api.js';
+  import { qs } from '../lib/api.js';
   import { groupByMonth, plural } from '../lib/format.js';
   import { docsVersion } from '../lib/stores.js';
+  import { takeRestore, listCount } from '../lib/router.js';
   import DocRow from './DocRow.svelte';
   export let query = {};
   export let emptyText = 'Aucun document.';
   const dispatch = createEventDispatcher();
-  const PAGE = 50;
+  const PAGE = 50, MAX_PAGE = 200;
 
-  let items = [], total = 0, loading = true, error = '', done = false, sentinel, observer, token = 0;
-  let key = '';
+  let items = [], total = 0, loading = true, error = '', done = false, observer, token = 0;
+  let qkey = null, vkey = $docsVersion;
+  let restore = takeRestore(); // set when we come back to this list with the browser's back button
+
+  // `want` documents, fetched page after page (the API gives at most MAX_PAGE at a time)
+  async function fetchUpTo(want) {
+    let got = [], totalNow = 0;
+    while (got.length < want) {
+      const r = await get('/documents' + qs({ ...query, offset: got.length, limit: Math.min(MAX_PAGE, want - got.length) }));
+      got = got.concat(r.items);
+      totalNow = r.total;
+      if (!r.items.length || got.length >= r.total) break;
+    }
+    return { got, totalNow };
+  }
 
   async function load(reset) {
     const my = ++token;
     if (reset) { items = []; done = false; loading = true; }
     error = '';
     try {
-      const r = await get('/documents' + qs({ ...query, offset: reset ? 0 : items.length, limit: PAGE }));
+      const wanted = reset ? (restore ? Math.min(Math.max(restore.count, PAGE), 1000) : PAGE) : PAGE;
+      const { got, totalNow } = reset ? await fetchUpTo(wanted) : await fetchMore();
       if (my !== token) return;
-      items = reset ? r.items : [...items, ...r.items];
-      total = r.total;
-      done = items.length >= r.total;
+      items = reset ? got : [...items, ...got];
+      total = totalNow;
+      done = items.length >= totalNow;
       dispatch('total', total);
+      if (reset && restore) {
+        const y = restore.y;
+        restore = null;
+        loading = false;
+        await tick();
+        window.scrollTo(0, y);
+      }
     } catch (e) { if (my === token) error = e.message; }
     if (my === token) loading = false;
   }
+  async function fetchMore() {
+    const r = await get('/documents' + qs({ ...query, offset: items.length, limit: PAGE }));
+    return { got: r.items, totalNow: r.total };
+  }
 
-  // reload from the top when the filters or the documents change
-  $: { const k = JSON.stringify(query) + ':' + $docsVersion; if (k !== key) { key = k; load(true); } }
+  // something changed behind the list's back (analysis finished, a scan found files): reload what is on screen in place,
+  // without a skeleton and without moving the page
+  async function refresh() {
+    const my = ++token;
+    try {
+      const { got, totalNow } = await fetchUpTo(Math.max(items.length, PAGE));
+      if (my !== token) return;
+      items = got; total = totalNow; done = items.length >= totalNow;
+      dispatch('total', total);
+    } catch { /* the next change tries again */ }
+  }
+
+  $: if (JSON.stringify(query) !== qkey) { qkey = JSON.stringify(query); load(true); }
+  $: if ($docsVersion !== vkey) { vkey = $docsVersion; if (qkey !== null && !loading) refresh(); }
+  $: listCount.set(items.length);
 
   function observe(node) {
     observer = new IntersectionObserver((entries) => { if (entries[0].isIntersecting && !loading && !done && !error) { loading = true; load(false); } }, { rootMargin: '400px' });
@@ -56,7 +96,7 @@
       {#each m.docs as d (d.id)}<DocRow doc={d} />{/each}
     </section>
   {/each}
-  <div use:observe bind:this={sentinel} style="height:1px"></div>
+  <div use:observe style="height:1px"></div>
   {#if loading}<div class="skrow"><div class="skeleton" style="width:52px;height:69px"></div></div>{/if}
 {/if}
 

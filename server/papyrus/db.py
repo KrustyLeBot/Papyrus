@@ -235,7 +235,7 @@ class Database:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=30000")
         # small page cache: the idle footprint matters more than a few milliseconds
-        conn.execute("PRAGMA cache_size=-4000")
+        conn.execute("PRAGMA cache_size=-2000")
         with self._lock:
             self._all.append(conn)
         return conn

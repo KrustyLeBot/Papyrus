@@ -1,18 +1,24 @@
 <script>
   import { route, navigate } from '../lib/router.js';
-  import { queue, toast, refreshQueue } from '../lib/stores.js';
-  import { get, post } from '../lib/api.js';
+  import { queue, toast, refreshQueue, docsVersion } from '../lib/stores.js';
+  import { get, post, qs } from '../lib/api.js';
   import { formatNumber } from '../lib/format.js';
   import DocList from '../components/DocList.svelte';
   import Icon from '../components/Icon.svelte';
 
-  let total = null, types = [], asking = false;
-  get('/types').then((r) => (types = r.items)).catch(() => {});
+  let total = null, asking = false, facets = { years: [], types: [] };
   $: hidden = $route.query.hidden === '1';
   $: folder = $route.query.folder ?? '';
   $: year = $route.query.year || '';
   $: type = $route.query.type || '';
-  $: years = Array.from({ length: 15 }, (_, i) => String(new Date().getFullYear() - i));
+  // each list only offers what exists given the other filters (the years that hold documents of this type in this folder…)
+  $: loadFacets(folder, type, year, hidden, $docsVersion);
+  async function loadFacets() {
+    try { facets = await get('/facets' + qs({ folder, type, year, hidden: hidden ? '1' : '' })); } catch { /* keep the last lists */ }
+  }
+  const withChosen = (list, value, key) => (value && !list.some((x) => x[key] === value) ? [...list, { [key]: value, count: 0 }] : list);
+  $: yearOptions = withChosen(facets.years, year, 'year');
+  $: typeOptions = withChosen(facets.types, type, 'name');
   $: query = { hidden: hidden ? '1' : '', folder, type, date_from: year ? `${year}-01-01` : '', date_to: year ? `${year}-12-31` : '' };
   $: crumbs = folder && folder !== '.' ? folder.split('/').map((name, i, a) => ({ name, path: a.slice(0, i + 1).join('/') })) : [];
   function set(next) {
@@ -49,11 +55,11 @@
   <div class="filters" role="group" aria-label="Filtres">
     <select class="filter" aria-label="Type de document" value={type} on:change={(e) => set({ type: e.target.value })}>
       <option value="">Tous les types</option>
-      {#each types as t}<option value={t.name}>{t.name}</option>{/each}
+      {#each typeOptions as t}<option value={t.name}>{t.name} ({t.count})</option>{/each}
     </select>
     <select class="filter" aria-label="Année" value={year} on:change={(e) => set({ year: e.target.value })}>
       <option value="">Toutes les années</option>
-      {#each years as y}<option value={y}>{y}</option>{/each}
+      {#each yearOptions as y}<option value={y.year}>{y.year} ({y.count})</option>{/each}
     </select>
     {#if type || year}<button class="btn ghost small" on:click={() => set({ type: '', year: '' })}>Effacer les filtres</button>{/if}
   </div>

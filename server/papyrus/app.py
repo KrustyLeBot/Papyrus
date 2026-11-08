@@ -250,11 +250,8 @@ def create_app(config: Config | None = None, services: Services | None = None, s
 
     # ------------------------------------------------------------------------------------------ documents
 
-    @app.get("/api/documents")
-    def list_documents(_u: str = Depends(user), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
-                       folder: str | None = None, children: bool = True, tag: str | None = None,
-                       type: str | None = None, status: str | None = None,
-                       date_from: str | None = None, date_to: str | None = None, hidden: bool = False):
+    def build_filters(folder, children, tag, type_, date_from, date_to, hidden, status=None):
+        """WHERE clauses (on `documents`, unqualified) shared by the list and the filter counts."""
         clauses, params = ["hidden = ?"], [int(hidden)]  # the timeline never shows hidden documents; « Masqués » only does
         if status == "all":
             pass
@@ -265,7 +262,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             clauses.append(f"status NOT IN {HIDDEN}")
         if folder == ".":  # the files lying at the root of the source folder
             clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = '')")
-        elif folder is not None and folder != "":
+        elif folder:
             like = folder.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
             if children:
                 clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = ? OR folder LIKE ? ESCAPE '\\')")
@@ -276,16 +273,24 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         if tag:
             clauses.append("id IN (SELECT dt.doc_id FROM doc_tags dt JOIN tags t ON t.id = dt.tag_id WHERE t.name = ?)")
             params.append(tag)
-        if type:
+        if type_:
             clauses.append("EXISTS (SELECT 1 FROM json_each(documents.types) WHERE value = ?)")
-            params.append(type)
+            params.append(type_)
         if date_from:
             clauses.append("doc_date >= ?")
             params.append(date_from)
         if date_to:
             clauses.append("doc_date <= ?")
             params.append(date_to)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        return clauses, params
+
+    @app.get("/api/documents")
+    def list_documents(_u: str = Depends(user), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                       folder: str | None = None, children: bool = True, tag: str | None = None,
+                       type: str | None = None, status: str | None = None,
+                       date_from: str | None = None, date_to: str | None = None, hidden: bool = False):
+        clauses, params = build_filters(folder, children, tag, type, date_from, date_to, hidden, status)
+        where = "WHERE " + " AND ".join(clauses)
         total = db.conn.execute(f"SELECT COUNT(*) FROM documents {where}", params).fetchone()[0]
         rows = db.conn.execute(
             f"SELECT id, title, doc_date, date_source, created_at, updated_at, status, ext, pages, size, original_name, "
@@ -293,6 +298,26 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             f"ORDER BY COALESCE(doc_date, substr(created_at, 1, 10)) DESC, id DESC LIMIT ? OFFSET ?",
             params + [limit, offset]).fetchall()
         return {"items": serialize(rows), "total": total, "offset": offset, "limit": limit}
+
+    @app.get("/api/facets")
+    def facets(_u: str = Depends(user), folder: str | None = None, children: bool = True, tag: str | None = None,
+               type: str | None = None, year: str | None = Query(None, pattern=r"^\d{4}$"), hidden: bool = False):
+        """What each filter can still offer given the others: the years that hold documents of this type in this folder,
+        the types present in this year… (a filter never narrows its own list, so it can be switched)."""
+        yf, yt = (f"{year}-01-01", f"{year}-12-31") if year else (None, None)
+        c, p = build_filters(folder, children, tag, type, None, None, hidden)
+        years = [{"year": r["y"], "count": r["n"]} for r in db.conn.execute(
+            f"SELECT substr(doc_date, 1, 4) AS y, COUNT(*) AS n FROM documents WHERE {' AND '.join(c)} AND doc_date IS NOT NULL "
+            f"GROUP BY y ORDER BY y DESC", p)]
+        c, p = build_filters(folder, children, tag, None, yf, yt, hidden)
+        types = [{"name": r["value"], "count": r["n"]} for r in db.conn.execute(
+            f"SELECT j.value AS value, COUNT(*) AS n FROM documents d, json_each(d.types) j WHERE d.id IN "
+            f"(SELECT id FROM documents WHERE {' AND '.join(c)}) GROUP BY j.value ORDER BY n DESC, j.value", p)]
+        c, p = build_filters(folder, children, None, type, yf, yt, hidden)
+        tags = [{"name": r["name"], "count": r["n"]} for r in db.conn.execute(
+            f"SELECT t.name AS name, COUNT(*) AS n FROM doc_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.doc_id IN "
+            f"(SELECT id FROM documents WHERE {' AND '.join(c)}) GROUP BY t.id ORDER BY n DESC, t.name LIMIT 40", p)]
+        return {"years": years, "types": types, "tags": tags}
 
     @app.get("/api/documents/{doc_id}")
     def document(doc_id: int, _u: str = Depends(user)):
@@ -458,16 +483,43 @@ def create_app(config: Config | None = None, services: Services | None = None, s
                date_to: str | None = None, limit: int = Query(50, ge=1, le=200), _u: str = Depends(user)):
         if not q.strip():
             return list_documents(_u, 0, limit, folder, children, tag, type, None, date_from, date_to, False)
-        found = svc.searcher.search(q, exact, folder or None, children, tag, type, date_from, date_to, limit)
+        # the search runs once, without the tag/type/date filters; they are applied here so that the filter lists can say what
+        # is still available given the other filters
+        found = svc.searcher.search(q, exact, folder or None, children, None, None, None, None, 500)
         ids = found["ids"]
+        marks = ",".join("?" * len(ids)) or "NULL"
+        meta = {r["id"]: (json.loads(r["types"] or "[]"), r["doc_date"] or "") for r in db.conn.execute(
+            f"SELECT id, types, doc_date FROM documents WHERE id IN ({marks})", ids)}
+        names: dict[int, set] = {i: set() for i in ids}
+        for r in db.conn.execute(f"SELECT dt.doc_id, t.name FROM doc_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.doc_id IN ({marks})", ids):
+            names[r["doc_id"]].add(r["name"])
+
+        def passes(i, skip=""):
+            kinds, day = meta[i]
+            return ((skip == "tag" or not tag or tag in names[i]) and (skip == "type" or not type or type in kinds)
+                    and (skip == "date" or ((not date_from or day >= date_from) and (not date_to or day <= date_to))))
+
+        def count(values):
+            tally: dict[str, int] = {}
+            for v in values:
+                tally[v] = tally.get(v, 0) + 1
+            return tally
+
+        kept = [i for i in ids if i in meta and passes(i)]
+        years = count(meta[i][1][:4] for i in ids if i in meta and passes(i, "date") and meta[i][1])
+        kinds = count(t for i in ids if i in meta and passes(i, "type") for t in meta[i][0])
+        labels = count(n for i in ids if i in meta and passes(i, "tag") for n in names[i])
         rows = {r["id"]: r for r in db.conn.execute(
-            f"SELECT * FROM documents WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)}
-        items = serialize([rows[d] for d in ids if d in rows])
+            f"SELECT * FROM documents WHERE id IN ({','.join('?' * len(kept[:limit])) or 'NULL'})", kept[:limit])}
+        items = serialize([rows[d] for d in kept[:limit] if d in rows])
         for item in items:
             item["snippet"] = found["snippets"].get(item["id"]) or ""
             item["match"] = found["how"].get(item["id"], "")
-        return {"items": items, "total": found["total"], "elapsed_ms": found["elapsed_ms"], "semantic": found["semantic"],
-                "corrections": found["corrections"]}
+        return {"items": items, "total": len(kept), "elapsed_ms": found["elapsed_ms"], "semantic": found["semantic"],
+                "corrections": found["corrections"],
+                "facets": {"years": [{"year": y, "count": n} for y, n in sorted(years.items(), reverse=True)],
+                           "types": [{"name": k, "count": n} for k, n in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))],
+                           "tags": [{"name": k, "count": n} for k, n in sorted(labels.items(), key=lambda kv: (-kv[1], kv[0]))[:40]]}}
 
     @app.get("/api/tags")
     def tags(_u: str = Depends(user)):

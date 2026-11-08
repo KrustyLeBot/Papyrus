@@ -18,11 +18,24 @@ export const route = writable(parse(new URL(window.location.href)));
 // the path the user came from inside the app, so "back" from a document returns to the right list
 export const previous = writable(null);
 
-window.addEventListener('popstate', () => route.set(parse(new URL(window.location.href))));
+// Scroll position and number of documents loaded, per address: back/forward gives the list back as it was left.
+const memory = new Map();
+export const listCount = writable(0); // kept up to date by the list on screen
+let restoring = false;
+const here = () => window.location.pathname + window.location.search;
+export function takeRestore() {
+  if (!restoring) return null;
+  restoring = false;
+  return memory.get(here()) || null;
+}
+
+window.addEventListener('popstate', () => { restoring = true; route.set(parse(new URL(window.location.href))); });
 
 export function navigate(to, { replace = false } = {}) {
   const current = window.location.pathname + window.location.search;
   if (to === current) return;
+  memory.set(current, { y: window.scrollY, count: get(listCount) });
+  restoring = false;
   previous.set(current);
   if (replace) history.replaceState({}, '', to); else history.pushState({}, '', to);
   route.set(parse(new URL(to, window.location.origin)));
