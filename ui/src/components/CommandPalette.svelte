@@ -12,6 +12,7 @@
   $: actions = [
     { label: 'Analyser les dossiers maintenant', run: async () => { try { await post('/scan'); toast('Analyse des dossiers lancée.', 'success', 2500); setTimeout(refreshQueue, 800); } catch (e) { toast(e.message, 'error'); } } },
     { label: 'Aller à la chronologie', hint: 'g t', run: () => navigate('/') },
+    { label: 'Voir les documents masqués', run: () => navigate('/?hidden=1') },
     ...($queue.locked ? [{ label: `Déverrouiller les PDF protégés (${$queue.locked})`, run: () => navigate('/unlock') }] : []),
     { label: 'Ouvrir l\'administration', run: () => navigate('/admin') },
     { label: 'Réanalyser tous les documents', run: async () => { try { const r = await post('/admin/reprocess-all'); toast(`${r.documents} document(s) remis en file d'analyse.`, 'success'); } catch (e) { toast(e.message, 'error'); } } },

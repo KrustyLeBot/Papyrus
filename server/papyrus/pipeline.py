@@ -25,9 +25,9 @@ def now() -> str:
 def index_document(db: Database, doc_id: int) -> None:
     """(Re)writes the document's row of the full-text index: title, text, file name, tags, folders."""
     conn = db.conn
-    row = conn.execute("SELECT title, text, original_name FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    row = conn.execute("SELECT title, text, original_name, hidden FROM documents WHERE id = ?", (doc_id,)).fetchone()
     conn.execute("DELETE FROM docs_fts WHERE rowid = ?", (doc_id,))
-    if row is None:
+    if row is None or row["hidden"]:  # a hidden document stays out of the search until it is shown again
         return
     tags = " ".join(r["name"] for r in conn.execute(
         "SELECT t.name FROM doc_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.doc_id = ?", (doc_id,)))
@@ -191,7 +191,7 @@ class Processor:
                 copy = cfg.unlocked_dir / f"{row['uuid']}.pdf"
                 for password in (self.vault.candidates(row["sha256"]) if self.vault else []):
                     if pdfcrypt.decrypt(path, copy, password):  # a password typed before opens it: nothing to ask
-                        self.vault.remember(row["sha256"], password)
+                        self.vault.learned(row["sha256"], password)
                         self._set_status(doc_id, "processing", work_path=f"unlocked/{copy.name}", unlocked_at=now())
                         path = copy
                         break

@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { route, navigate } from './lib/router.js';
   import { get } from './lib/api.js';
-  import { me, loadFolders, startQueuePolling, stopQueuePolling, paletteOpen, drawerOpen } from './lib/stores.js';
+  import { me, loadFolders, startQueuePolling, stopQueuePolling, paletteOpen, drawerOpen, queue } from './lib/stores.js';
+  import { post } from './lib/api.js';
   import Sidebar from './components/Sidebar.svelte';
   import Topbar from './components/Topbar.svelte';
   import Toasts from './components/Toasts.svelte';
@@ -27,6 +28,7 @@
     try { const s = await get('/admin/status'); degraded = s.model.status === 'absent' || s.model.status === 'downloading'; } catch { /* ignore */ }
   }
   onDestroy(stopQueuePolling);
+  async function relog() { try { await post('/auth/logout'); } catch { /* ignore */ } me.set(null); }
 
   let chord = null, chordTimer;
   function typing(e) {
@@ -62,6 +64,9 @@
     <Sidebar />
     <div class="content">
       <Topbar bind:input={searchInput} />
+      {#if $queue.vault_locked && !$me?.auth_disabled}
+        <div class="banner"><span class="icon"><Icon name="lock" /></span><span>Papyrus a redémarré : les mots de passe retenus pour tes PDF sont chiffrés avec ton mot de passe de connexion, il ne peut pas les lire avant que tu te reconnectes.</span><button class="btn small" on:click={relog}>Se reconnecter</button></div>
+      {/if}
       {#if degraded}
         <div class="banner"><span class="icon"><Icon name="alert" /></span>Mode dégradé : le modèle d'embeddings n'est pas disponible. La recherche plein texte et les tags fonctionnent ; la recherche par sens et les documents similaires reviendront avec le modèle.</div>
       {/if}
@@ -88,6 +93,7 @@
   .shell { display: flex; min-height: 100vh; }
   .content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   main { flex: 1; }
+  .banner :global(.btn) { margin-left: auto; flex: 0 0 auto; }
   .tabs { display: none; }
   @media (max-width: 900px) {
     .tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; height: 56px; background: var(--surface); border-top: 1px solid var(--border); }

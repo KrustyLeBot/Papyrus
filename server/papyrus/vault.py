@@ -1,21 +1,24 @@
 """Passwords of protected PDFs, kept so the user types each one once.
 
-Each password is stored against the SHA-256 of the document it opened, encrypted at rest (Fernet: AES-128-CBC with
-HMAC) with a key that is NOT in the database: PAPYRUS_KEY from the environment when set (then a copy of the data
-folder alone is useless), else a random key file `secret.key` next to the database. They are tried, most recently
-useful first, on every protected PDF the scanner finds later. A password is never logged, never returned by the API,
-never written to an export."""
+The key is derived (scrypt) from the password of the user's own Papyrus account, nothing else: no key file, no
+setting. Papyrus only knows that password while the user logs in, so the key lives in memory from the login until the
+process stops. Consequences, on purpose:
+  - a copy of the data folder alone cannot read the saved passwords;
+  - after a restart, saved passwords wait for the next login (the UI says so);
+  - change the account password and the saved ones cannot be read any more: they are dropped at the next login and
+    the user types them again (the documents already unlocked keep their decrypted copy).
+Each saved password is tied to the SHA-256 of the document it opened and to the account that saved it. It is never
+logged, never returned by the API, never written to an export. Without a login (AUTH_DISABLED) nothing is kept."""
 from __future__ import annotations
 
 import base64
 import datetime as dt
 import hashlib
 import os
-import secrets
+import threading
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from .config import Config
 from .db import Database
 
 MAX_TRIES = 100
@@ -26,45 +29,97 @@ def now() -> str:
 
 
 class Vault:
-    def __init__(self, config: Config, db: Database):
+    def __init__(self, db: Database):
         self.db = db
-        self._fernet = Fernet(self._key(config))
+        self._lock = threading.Lock()
+        self._keys: dict[str, tuple[Fernet, str | None]] = {}  # account -> (cipher, fingerprint of its password)
 
-    @staticmethod
-    def _key(config: Config) -> bytes:
-        env = os.environ.get("PAPYRUS_KEY", "").strip()
-        if env:
-            return base64.urlsafe_b64encode(hashlib.sha256(env.encode()).digest())
-        path = config.data_dir / "secret.key"
-        try:
-            return path.read_bytes().strip()
-        except FileNotFoundError:
-            key = Fernet.generate_key()
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(key)
-            return key
+    # ---------------------------------------------------------------- keys
 
-    def remember(self, sha: str, password: str) -> None:
-        token = self._fernet.encrypt(password.encode("utf-8"))
+    def _salt(self, user: str) -> bytes:
+        name = f"vault_salt:{user}"
+        raw = self.db.setting(name)
+        if raw:
+            return bytes.fromhex(raw)
+        salt = os.urandom(16)
+        with self.db.tx():
+            self.db.set_setting(name, salt.hex())
+        return salt
+
+    def unlock(self, user: str, password: str, fingerprint: str | None = None) -> int:
+        """Derives the account's key from its password and keeps it in memory. Passwords saved under a different key
+        (the account password was changed) cannot be read any more and are dropped: returns how many."""
+        derived = hashlib.scrypt(password.encode("utf-8"), salt=self._salt(user), n=2 ** 14, r=8, p=1, dklen=32)
+        cipher = Fernet(base64.urlsafe_b64encode(derived))
+        dropped = 0
+        for r in self.db.conn.execute("SELECT sha256, secret FROM doc_passwords WHERE owner = ?", (user,)).fetchall():
+            try:
+                cipher.decrypt(r["secret"])
+            except InvalidToken:
+                with self.db.tx():
+                    self.db.conn.execute("DELETE FROM doc_passwords WHERE owner = ? AND sha256 = ?", (user, r["sha256"]))
+                dropped += 1
+        with self._lock:
+            self._keys[user] = (cipher, fingerprint)
+        if dropped:
+            print(f"papyrus: {dropped} saved PDF password(s) of {user} could not be read with the new account password and were dropped", flush=True)
+        return dropped
+
+    def is_unlocked(self, user: str, fingerprint: str | None = None) -> bool:
+        with self._lock:
+            held = self._keys.get(user)
+        return held is not None and (fingerprint is None or held[1] == fingerprint)
+
+    def status(self) -> dict:
+        """saved: passwords kept; locked: some belong to an account nobody logged in as since the process started."""
+        rows = self.db.conn.execute("SELECT owner, COUNT(*) AS n FROM doc_passwords GROUP BY owner").fetchall()
+        with self._lock:
+            held = set(self._keys)
+        return {"saved": sum(r["n"] for r in rows), "locked": any(r["owner"] not in held for r in rows),
+                "unlocked_accounts": len(held)}
+
+    # ---------------------------------------------------------------- saving and trying
+
+    def remember(self, owner: str, sha: str, password: str) -> bool:
+        """Saves the password for this document under the account's key; False when that account's key is not in memory
+        (AUTH_DISABLED, or a session that outlived a restart: logging in again brings the key back)."""
+        with self._lock:
+            held = self._keys.get(owner)
+        if held is None:
+            return False
+        token = held[0].encrypt(password.encode("utf-8"))
         with self.db.tx():
             self.db.conn.execute(
-                "INSERT INTO doc_passwords(sha256, secret, created_at, used_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(sha256) DO UPDATE SET secret = excluded.secret, used_at = excluded.used_at", (sha, token, now(), now()))
+                "INSERT INTO doc_passwords(owner, sha256, secret, created_at, used_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(owner, sha256) DO UPDATE SET secret = excluded.secret, used_at = excluded.used_at",
+                (owner, sha, token, now(), now()))
+        return True
 
-    def touch(self, sha: str) -> None:
-        with self.db.tx():
-            self.db.conn.execute("UPDATE doc_passwords SET used_at = ? WHERE sha256 = ?", (now(), sha))
+    def learned(self, sha: str, password: str) -> None:
+        """A saved password opened this document by itself: it is tied to the document too, for every account whose key
+        is in memory."""
+        with self._lock:
+            owners = list(self._keys)
+        for owner in owners:
+            self.remember(owner, sha, password)
 
     def candidates(self, sha: str) -> list[str]:
-        """The password saved for this very document first, then every other one (distinct, recently useful first)."""
-        rows = self.db.conn.execute("SELECT sha256, secret FROM doc_passwords ORDER BY (sha256 = ?) DESC, used_at DESC", (sha,)).fetchall()
+        """Every password that can be read now (accounts whose key is in memory): the one saved for this very document
+        first, then the others, recently useful first, without duplicates."""
+        with self._lock:
+            held = dict(self._keys)
+        if not held:
+            return []
+        marks = ",".join("?" * len(held))
+        rows = self.db.conn.execute(
+            f"SELECT owner, secret FROM doc_passwords WHERE owner IN ({marks}) ORDER BY (sha256 = ?) DESC, used_at DESC",
+            [*held, sha]).fetchall()
         out: list[str] = []
         for r in rows:
             try:
-                password = self._fernet.decrypt(r["secret"]).decode("utf-8")
+                password = held[r["owner"]][0].decrypt(r["secret"]).decode("utf-8")
             except InvalidToken:
-                continue  # saved under another key (PAPYRUS_KEY changed): it cannot be read, so it is skipped
+                continue
             if password not in out:
                 out.append(password)
             if len(out) >= MAX_TRIES:
@@ -72,7 +127,7 @@ class Vault:
         return out
 
     def count(self) -> int:
-        return self.db.conn.execute("SELECT COUNT(*) FROM doc_passwords").fetchone()[0]
+        return self.db.conn.execute("SELECT COUNT(DISTINCT sha256) FROM doc_passwords").fetchone()[0]
 
     def forget_all(self) -> int:
         with self.db.tx():

@@ -8,11 +8,12 @@
 
   let total = null, types = [], asking = false;
   get('/types').then((r) => (types = r.items)).catch(() => {});
+  $: hidden = $route.query.hidden === '1';
   $: folder = $route.query.folder ?? '';
   $: year = $route.query.year || '';
   $: type = $route.query.type || '';
   $: years = Array.from({ length: 15 }, (_, i) => String(new Date().getFullYear() - i));
-  $: query = { folder, type, date_from: year ? `${year}-01-01` : '', date_to: year ? `${year}-12-31` : '' };
+  $: query = { hidden: hidden ? '1' : '', folder, type, date_from: year ? `${year}-01-01` : '', date_to: year ? `${year}-12-31` : '' };
   $: crumbs = folder && folder !== '.' ? folder.split('/').map((name, i, a) => ({ name, path: a.slice(0, i + 1).join('/') })) : [];
   function set(next) {
     const p = new URLSearchParams();
@@ -41,9 +42,10 @@
     </nav>
   {/if}
   <header>
-    <h1>{crumbs.length ? crumbs[crumbs.length - 1].name : folder === '.' ? 'À la racine' : 'Chronologie'}</h1>
+    <h1>{hidden ? 'Masqués' : crumbs.length ? crumbs[crumbs.length - 1].name : folder === '.' ? 'À la racine' : 'Chronologie'}</h1>
     {#if total !== null}<span class="muted">{formatNumber(total)} document{total > 1 ? 's' : ''}, triés par date du document{crumbs.length ? ', sous-dossiers inclus' : ''}</span>{/if}
   </header>
+  {#if hidden}<p class="muted hint">Ces documents sont gardés (analyse, tags, suivi des déplacements) mais n'apparaissent ni dans la chronologie, ni dans les dossiers, ni dans la recherche. Ouvre-en un pour l'afficher à nouveau.</p>{/if}
   <div class="filters" role="group" aria-label="Filtres">
     <select class="filter" aria-label="Type de document" value={type} on:change={(e) => set({ type: e.target.value })}>
       <option value="">Tous les types</option>
@@ -56,9 +58,9 @@
     {#if type || year}<button class="btn ghost small" on:click={() => set({ type: '', year: '' })}>Effacer les filtres</button>{/if}
   </div>
   <DocList {query} on:total={(e) => (total = e.detail)}
-    emptyText={folder || type || year ? 'Aucun document ne correspond à ces filtres.' : 'Aucun document pour l\'instant. Papyrus lit tes dossiers : les PDF et DOCX apparaissent ici après l\'analyse.'}>
+    emptyText={hidden ? 'Aucun document masqué.' : folder || type || year ? 'Aucun document ne correspond à ces filtres.' : 'Aucun document pour l\'instant. Papyrus lit tes dossiers : les PDF et DOCX apparaissent ici après l\'analyse.'}>
     <svelte:fragment slot="empty">
-      {#if !folder && !type && !year}
+      {#if !folder && !type && !year && !hidden}
         <p class="muted small">Dossier analysé : <span class="mono">{scan?.source || '/source'}</span>{#if scan?.warning}<br /><span class="warn">{scan.warning}</span>{/if}</p>
         <button class="btn primary" on:click={scanNow} disabled={asking || scan?.running}><Icon name="refresh" />Analyser maintenant</button>
       {/if}
@@ -73,5 +75,6 @@
   .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 0; align-items: center; }
   .filter { height: 30px; padding: 0 10px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 13px; }
   .small { font-size: 13px; text-align: center; }
+  .hint { margin: 6px 0 0; max-width: 70ch; font-size: 13.5px; }
   .warn { color: var(--warning); }
 </style>

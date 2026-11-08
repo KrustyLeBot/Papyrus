@@ -46,6 +46,7 @@ class UnlockBody(BaseModel):
 class DocPatch(BaseModel):
     title: str | None = Field(default=None, max_length=300)
     doc_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    hidden: bool | None = None
 
 
 class TagBody(BaseModel):
@@ -88,6 +89,22 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     app.state.services = svc
     auth = Auth(config, svc.db, svc.accounts)
     app.state.auth = auth
+
+    def basic_login(name: str, password: str) -> None:
+        fingerprint = svc.accounts.fingerprint(name)
+        if not svc.vault.is_unlocked(name, fingerprint):
+            svc.vault.unlock(name, password, fingerprint)
+
+    auth.on_basic_login = basic_login
+
+    def retry_waiting_pdfs() -> None:
+        """With the key back, protected PDFs that waited get tried against the saved passwords (they go back to waiting
+        if none fits)."""
+        if svc.vault.count():
+            with db.tx():
+                n = db.conn.execute("UPDATE documents SET status = 'pending' WHERE status = 'password_required'").rowcount
+            if n:
+                svc.worker.wake()
 
     if start_worker and not svc.embedder.available:
         threading.Thread(target=svc.embedder.download, name="model-download", daemon=True).start()
@@ -156,6 +173,8 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             print(f"papyrus: failed login from {ip}", flush=True)
             raise _err(401, "Identifiant ou mot de passe incorrect.")
         auth.throttle.succeeded(ip)
+        svc.vault.unlock(body.user, body.password, svc.accounts.fingerprint(body.user))  # the saved PDF passwords open
+        retry_waiting_pdfs()
         auth.close_session(request.cookies.get(SESSION_COOKIE))
         token = auth.open_session(body.user)
         response = JSONResponse({"user": body.user})
@@ -207,6 +226,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
                 "thumb": f"/api/documents/{r['id']}/thumb?v={quote(r['updated_at'])}" if r["status"] == "done" else None,
                 "path": where[0]["path"] if where else "", "folder": where[0]["folder"] if where else "",
                 "copies": len(where), "summary": r["summary"] if full else (r["summary"] or "")[:200],
+                "hidden": bool(r["hidden"]),
             }
             if full:
                 item.update({
@@ -234,8 +254,8 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     def list_documents(_u: str = Depends(user), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                        folder: str | None = None, children: bool = True, tag: str | None = None,
                        type: str | None = None, status: str | None = None,
-                       date_from: str | None = None, date_to: str | None = None):
-        clauses, params = [], []
+                       date_from: str | None = None, date_to: str | None = None, hidden: bool = False):
+        clauses, params = ["hidden = ?"], [int(hidden)]  # the timeline never shows hidden documents; « Masqués » only does
         if status == "all":
             pass
         elif status:
@@ -269,7 +289,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         total = db.conn.execute(f"SELECT COUNT(*) FROM documents {where}", params).fetchone()[0]
         rows = db.conn.execute(
             f"SELECT id, title, doc_date, date_source, created_at, updated_at, status, ext, pages, size, original_name, "
-            f"error, types, summary FROM documents {where} "
+            f"error, types, summary, hidden FROM documents {where} "
             f"ORDER BY COALESCE(doc_date, substr(created_at, 1, 10)) DESC, id DESC LIMIT ? OFFSET ?",
             params + [limit, offset]).fetchall()
         return {"items": serialize(rows), "total": total, "offset": offset, "limit": limit}
@@ -295,7 +315,10 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             if body.doc_date is not None:
                 db.conn.execute("UPDATE documents SET doc_date = ?, date_source = 'manual' WHERE id = ?", (body.doc_date, doc_id))
             touch(doc_id)
-            if row["status"] == "done":
+        if body.hidden is not None:
+            svc.library.set_hidden(doc_id, body.hidden)
+        with db.tx():
+            if row["status"] == "done" and not body.hidden:
                 if body.doc_date is not None:
                     svc.processor.auto_tags(doc_id)
                 else:
@@ -386,8 +409,8 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         return {"items": svc.library.locked()}
 
     @app.post("/api/documents/{doc_id}/unlock")
-    def unlock(doc_id: int, body: UnlockBody, _u: str = Depends(user)):
-        first = svc.library.unlock(doc_id, body.password, body.remember)
+    def unlock(doc_id: int, body: UnlockBody, request: Request, _u: str = Depends(user)):
+        first = svc.library.unlock(doc_id, body.password, body.remember, request.state.user)
         if first.status == "rejected":
             raise _err(409, first.message)
         if first.status == "password_required":
@@ -395,11 +418,12 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         others = []
         if body.try_others:
             for item in svc.library.locked():
-                result = svc.library.unlock(item["id"], body.password, body.remember)
+                result = svc.library.unlock(item["id"], body.password, body.remember, request.state.user)
                 if result.status == "queued":
                     others.append({"id": result.doc_id, "name": result.name})
         svc.worker.wake()
-        return {"status": first.status, "id": first.doc_id, "others": others, "remaining": len(svc.library.locked())}
+        return {"status": first.status, "id": first.doc_id, "others": others, "remaining": len(svc.library.locked()),
+                "remembered": first.remembered, "asked_to_remember": body.remember}
 
     # ------------------------------------------------------------------------------------------ folders & scan
 
@@ -407,7 +431,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     def folders(_u: str = Depends(user)):
         rows = db.conn.execute(
             f"SELECT l.folder, COUNT(DISTINCT l.doc_id) AS n FROM locations l JOIN documents d ON d.id = l.doc_id "
-            f"WHERE d.status NOT IN {HIDDEN} GROUP BY l.folder ORDER BY l.folder").fetchall()
+            f"WHERE d.status NOT IN {HIDDEN} AND d.hidden = 0 GROUP BY l.folder ORDER BY l.folder").fetchall()
         return {"items": [{"path": r["folder"], "count": r["n"]} for r in rows]}
 
     def scan_info() -> dict:
@@ -433,7 +457,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
                tag: str | None = None, type: str | None = None, date_from: str | None = None,
                date_to: str | None = None, limit: int = Query(50, ge=1, le=200), _u: str = Depends(user)):
         if not q.strip():
-            return list_documents(_u, 0, limit, folder, children, tag, type, None, date_from, date_to)
+            return list_documents(_u, 0, limit, folder, children, tag, type, None, date_from, date_to, False)
         found = svc.searcher.search(q, exact, folder or None, children, tag, type, date_from, date_to, limit)
         ids = found["ids"]
         rows = {r["id"]: r for r in db.conn.execute(
@@ -464,8 +488,10 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             "('pending', 'processing', 'error') ORDER BY CASE status WHEN 'processing' THEN 0 WHEN 'pending' THEN 1 "
             "ELSE 2 END, id LIMIT 200").fetchall()
         locked_count = db.conn.execute("SELECT COUNT(*) FROM documents WHERE status = 'password_required'").fetchone()[0]
+        hidden_count = db.conn.execute(f"SELECT COUNT(*) FROM documents WHERE hidden = 1 AND status NOT IN {HIDDEN}").fetchone()[0]
         return {"items": [dict(r) for r in rows], "current": svc.worker.current, "jobs": svc.worker.jobs(),
-                "locked": locked_count, "scan": scan_info()}
+                "locked": locked_count, "hidden": hidden_count, "scan": scan_info(),
+                "vault_locked": svc.vault.status()["locked"]}
 
     @app.get("/api/admin/status")
     def admin_status(_u: str = Depends(user)):
@@ -478,7 +504,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             "tags": db.conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
             "locations": db.conn.execute("SELECT COUNT(*) FROM locations").fetchone()[0],
             "ignored": db.conn.execute("SELECT COUNT(*) FROM ignored").fetchone()[0],
-            "passwords": svc.vault.count(),
+            "passwords": svc.vault.count(), "vault": svc.vault.status(),
             "scan": scan_info(),
             "worker": {"alive": bool(svc.worker.thread and svc.worker.thread.is_alive()), "current": svc.worker.current,
                        "jobs": svc.worker.jobs()},
@@ -521,7 +547,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         """Analyses every document again (text, OCR orientation, date, title, keywords, summary). Titles and dates typed
         by hand, and tags typed by hand, are kept."""
         with db.tx():
-            n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE status IN ('done', 'error')").rowcount
+            n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE status IN ('done', 'error', 'password_required')").rowcount
         svc.worker.wake()
         return {"ok": True, "documents": n}
 

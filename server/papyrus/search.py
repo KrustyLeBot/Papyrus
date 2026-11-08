@@ -96,7 +96,7 @@ class VectorIndex:
 
     def _current_stamp(self) -> tuple:
         row = self.db.conn.execute("SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(embedding)) FROM documents "
-                                   "WHERE embedding IS NOT NULL AND status = 'done'").fetchone()
+                                   "WHERE embedding IS NOT NULL AND status = 'done' AND hidden = 0").fetchone()
         return tuple(row)
 
     def get(self) -> tuple[np.ndarray, np.ndarray]:
@@ -104,7 +104,7 @@ class VectorIndex:
         with self._lock:
             if self._matrix is None or stamp != self._stamp:
                 rows = self.db.conn.execute("SELECT id, embedding FROM documents WHERE embedding IS NOT NULL "
-                                            "AND status = 'done'").fetchall()
+                                            "AND status = 'done' AND hidden = 0").fetchall()
                 self._ids = np.array([r["id"] for r in rows], dtype=np.int64)
                 self._matrix = (np.vstack([blob_to_vec(r["embedding"]) for r in rows]) if rows
                                 else np.zeros((0, 384), dtype=np.float32))

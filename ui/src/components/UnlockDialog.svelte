@@ -1,6 +1,6 @@
 <script>
   import { post } from '../lib/api.js';
-  import { unlockTarget, queue, toast, loadFolders, bumpDocs, refreshQueue } from '../lib/stores.js';
+  import { unlockTarget, queue, toast, loadFolders, bumpDocs, refreshQueue, me } from '../lib/stores.js';
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
 
@@ -15,6 +15,7 @@
       const r = await post(`/documents/${doc.id}/unlock`, { password, try_others: tryOthers, remember });
       const n = 1 + r.others.length;
       toast(n > 1 ? `${n} PDF déverrouillés, analyse en cours.` : r.status === 'duplicate' ? 'Ce document était déjà présent.' : 'PDF déverrouillé, analyse en cours.', 'success');
+      if (r.asked_to_remember && !r.remembered) toast('Déverrouillé, mais mot de passe non retenu : reconnecte-toi pour que Papyrus puisse le garder.', 'info', 7000);
       password = ''; unlockTarget.set(null);
       await refreshQueue(); await loadFolders(); bumpDocs();
     } catch (e) { error = e.message; }
@@ -36,7 +37,11 @@
       {#if others > 0}
         <label class="chk"><input type="checkbox" bind:checked={tryOthers} />{others > 1 ? `Essayer ce mot de passe sur les ${others} autres PDF en attente` : "Essayer ce mot de passe sur l'autre PDF en attente"}</label>
       {/if}
-      <label class="chk"><input type="checkbox" bind:checked={remember} />Retenir ce mot de passe (chiffré) pour les prochains PDF protégés</label>
+      {#if $me?.auth_disabled}
+        <p class="muted small">Sans connexion (AUTH_DISABLED), Papyrus ne peut pas retenir de mot de passe : il n'a pas de clé pour le chiffrer.</p>
+      {:else}
+        <label class="chk"><input type="checkbox" bind:checked={remember} />Retenir ce mot de passe pour les prochains PDF protégés <span class="muted">(chiffré avec ton mot de passe de connexion)</span></label>
+      {/if}
       <div class="foot"><button type="button" class="btn" on:click={close}>Plus tard</button><button class="btn primary" disabled={busy || !password}>Déverrouiller</button></div>
     </form>
   </Modal>
@@ -49,6 +54,7 @@
   h2 { font-size: 17px; font-weight: 700; }
   .name { word-break: break-all; }
   .err { color: var(--danger); font-size: 13px; }
+  .small { font-size: 13px; }
   .chk { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; }
   .chk input { accent-color: var(--accent); width: 16px; height: 16px; margin-top: 2px; }
   .foot { display: flex; gap: 8px; justify-content: flex-end; }

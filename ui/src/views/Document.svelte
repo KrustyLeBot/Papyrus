@@ -1,6 +1,6 @@
 <script>
   import { route, navigate, goBack, link } from '../lib/router.js';
-  import { loadFolders, toast, bumpDocs, docsVersion } from '../lib/stores.js';
+  import { loadFolders, toast, bumpDocs, docsVersion, refreshQueue } from '../lib/stores.js';
   import { get, post, patch, del } from '../lib/api.js';
   import { formatDate, toInputDate, fromInputDate, formatSize, dateTime } from '../lib/format.js';
   import Icon from '../components/Icon.svelte';
@@ -39,7 +39,8 @@
   const addTag = () => act(async () => { const n = newTag.trim(); if (!n) return; adopt(await post(`/documents/${id}/tags`, { name: n })); newTag = ''; addingTag = false; bumpDocs(); });
   const removeTag = (t) => act(async () => { adopt(await del(`/documents/${id}/tags/${t.id}`)); bumpDocs(); });
   const reprocess = () => act(async () => { await post(`/documents/${id}/reprocess`); await load(id); bumpDocs(); }, 'Analyse relancée.');
-  const forget = () => act(async () => { await del(`/documents/${id}`); dialog = null; await loadFolders(); bumpDocs(); toast('Document retiré de Papyrus. Ton fichier n\'a pas bougé.', 'success'); navigate('/', { replace: true }); });
+  const setHidden = (hide) => act(async () => { adopt(await patch(`/documents/${id}`, { hidden: hide })); await loadFolders(); bumpDocs(); refreshQueue(); }, hide ? 'Document masqué. Il est dans « Masqués ».' : 'Document affiché à nouveau.');
+  const forget = () => act(async () => { await del(`/documents/${id}`); dialog = null; await loadFolders(); bumpDocs(); toast('Document retiré définitivement de Papyrus. Ton fichier n\'a pas bougé.', 'success'); navigate('/', { replace: true }); });
 
   const MONO = ['siret', 'siren', 'che_uid', 'tva', 'contract_no', 'cadastre_ref'];
   const KEYS = { siret: 'SIRET', siren: 'SIREN', che_uid: 'IDE', tva: 'TVA', cadastre_ref: 'Cadastre', property_address: 'Adresse', contract_no: 'Contrat', employer_name: 'Employeur', company: 'Société', year: 'Année' };
@@ -58,7 +59,12 @@
       <div class="acts">
         <a class="btn" href="{fileUrl}?download=1" download><Icon name="download" /><span class="hide">Télécharger l'original</span></a>
         <button class="btn" disabled={busy || doc.status === 'processing'} on:click={reprocess}><Icon name="refresh" /><span class="hide">Relancer l'analyse</span></button>
-        <button class="btn danger" on:click={() => (dialog = 'forget')}><Icon name="trash" /><span class="hide">Retirer de Papyrus</span></button>
+        {#if doc.hidden}
+          <button class="btn" disabled={busy} on:click={() => setHidden(false)}><Icon name="eye" /><span class="hide">Afficher à nouveau</span></button>
+          <button class="btn danger" on:click={() => (dialog = 'forget')}><Icon name="trash" /><span class="hide">Retirer définitivement</span></button>
+        {:else}
+          <button class="btn" disabled={busy} on:click={() => setHidden(true)}><Icon name="eyeOff" /><span class="hide">Masquer</span></button>
+        {/if}
       </div>
     {/if}
   </div>
@@ -68,6 +74,7 @@
   {:else if !doc}
     <div class="body"><div class="skeleton" style="flex:1;min-height:600px"></div><div class="panel"><div class="skeleton" style="height:300px"></div></div></div>
   {:else}
+    {#if doc.hidden}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="eyeOff" /></span>Ce document est masqué : absent de la chronologie, des dossiers et de la recherche. Rien n'est supprimé.</div>{/if}
     {#if doc.status === 'error'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="alert" /></span>Le traitement a échoué : {doc.error}. Tu peux relancer l'analyse.</div>
     {:else if doc.status === 'password_required'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="lock" /></span>Ce PDF est protégé par un mot de passe : <a href="/unlock" use:link style="text-decoration:underline">le déverrouiller</a>.</div>
     {:else if doc.status === 'missing'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="alert" /></span>Le fichier n'est plus dans les dossiers analysés. Il reviendra de lui-même s'il réapparaît.</div>
@@ -153,8 +160,8 @@
 </div>
 
 {#if dialog === 'forget'}
-  <Confirm title="Retirer de Papyrus" confirm="Retirer de Papyrus" danger {busy} on:close={() => (dialog = null)} on:confirm={forget}>
-    « {doc?.title} » disparaît de Papyrus (analyse, tags, titre) et ne sera plus jamais ré-indexé, même si une copie traîne ailleurs. <strong>Ton fichier reste où il est, intact.</strong> Pour le réintégrer : Administration → Réintégrer les documents retirés.
+  <Confirm title="Retirer définitivement de Papyrus" confirm="Retirer définitivement" danger {busy} on:close={() => (dialog = null)} on:confirm={forget}>
+    « {doc?.title} » est effacé de Papyrus (analyse, tags, titre saisi) et ne sera plus jamais ré-indexé, même si une copie traîne ailleurs. <strong>Ton fichier reste où il est, intact.</strong> Pour garder la fiche sans la voir, laisse-la simplement masquée. Pour réintégrer après coup : Administration → Réintégrer les documents retirés.
   </Confirm>
 {/if}
 

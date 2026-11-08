@@ -109,6 +109,7 @@ class Auth:
         self.db = db
         self.accounts = accounts
         self.throttle = Throttle()
+        self.on_basic_login = None  # (user, password) -> None: lets the saved PDF passwords open for scripts too
 
     @property
     def disabled(self) -> bool:
@@ -158,6 +159,8 @@ class Auth:
             return None, True
         if self.accounts and self.accounts.verify(user, password):
             self.throttle.succeeded(ip)
+            if self.on_basic_login:
+                self.on_basic_login(user, password)
             return user, True
         self.throttle.failed(ip)
         print(f"papyrus: failed Basic Auth from {ip}", flush=True)

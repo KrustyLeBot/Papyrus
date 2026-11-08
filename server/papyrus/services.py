@@ -25,7 +25,7 @@ class Services:
         dirs = [d for d in (baked, config.model_dir) if d]
         self.embedder = Embedder(dirs, config.model_url, config.embed_threads, config.embed_idle_unload_min,
                                  download_dir=config.model_dir)
-        self.vault = Vault(config, self.db)
+        self.vault = Vault(self.db)
         self.processor = Processor(config, self.db, self.rules, self.embedder, self.vault)
         self.library = Library(config, self.db, self.processor.source_path, self.vault)
         self.vectors = VectorIndex(self.db, idle_seconds=max(config.embed_idle_unload_min, 1) * 60)

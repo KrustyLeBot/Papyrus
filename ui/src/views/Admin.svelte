@@ -89,7 +89,8 @@
     </section>
     <section>
       <h2>Mots de passe des PDF</h2>
-      <p class="muted">{s.passwords ? `Mot de passe retenu pour ${plural(s.passwords, 'document', 'documents')}.` : 'Aucun mot de passe retenu.'} Chiffrés (la clé est {s.auth ? 'dans PAPYRUS_KEY ou dans data/secret.key' : ''}), liés à l'empreinte du document qu'ils ont ouvert, et réessayés tout seuls sur chaque PDF protégé que Papyrus trouve. Jamais affichés, jamais exportés.</p>
+      <p class="muted">{s.passwords ? `Mot de passe retenu pour ${plural(s.passwords, 'document', 'documents')}.` : 'Aucun mot de passe retenu.'} Chiffrés avec ton mot de passe de connexion, liés à l'empreinte du document qu'ils ont ouvert, et réessayés tout seuls sur chaque PDF protégé que Papyrus trouve. Jamais affichés, jamais exportés.</p>
+      <p class="muted">La clé n'existe qu'en mémoire, depuis ta connexion : après un redémarrage de Papyrus il faut te reconnecter une fois. Si tu changes ton mot de passe de connexion, les mots de passe retenus sont perdus et tu les retapes.{#if s.vault.locked} <span class="warn">Ils sont verrouillés pour l'instant : reconnecte-toi.</span>{/if}</p>
       {#if s.passwords}<div class="btns"><button class="btn small danger" disabled={busy === 'pw'} on:click={() => action('pw', '/admin/forget-passwords', 'Mots de passe oubliés.')}>Oublier tous les mots de passe</button></div>{/if}
     </section>
     <section>

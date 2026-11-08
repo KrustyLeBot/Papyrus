@@ -13,7 +13,8 @@
     open.has(p) ? open.delete(p) : open.add(p);
     open = open; save();
   }
-  $: selected = $route.name === 'timeline' ? ($route.query.folder ?? null) : null;
+  $: hiddenView = $route.name === 'timeline' && $route.query.hidden === '1';
+  $: selected = $route.name === 'timeline' && !hiddenView ? ($route.query.folder ?? null) : null;
   // the selected folder's ancestors are opened so it is always visible
   $: if (selected) {
     const parts = selected.split('/');
@@ -35,7 +36,10 @@
     <span>Papyrus</span>
   </a>
   <nav aria-label="Navigation principale">
-    <a class="nav" class:on={nav('timeline') && !selected} href="/" use:link on:click={go}><Icon name="clock" />Chronologie<span class="k">g t</span></a>
+    <a class="nav" class:on={nav('timeline') && !selected && !hiddenView} href="/" use:link on:click={go}><Icon name="clock" />Chronologie<span class="k">g t</span></a>
+    {#if $queue.hidden > 0 || hiddenView}
+      <a class="nav" class:on={hiddenView} href="/?hidden=1" use:link on:click={go}><Icon name="eyeOff" />Masqués<span class="count">{$queue.hidden}</span></a>
+    {/if}
     {#if $queue.locked > 0}
       <a class="nav" class:on={nav('unlock')} href="/unlock" use:link on:click={go}><Icon name="lock" />À déverrouiller<span class="badge">{$queue.locked}</span></a>
     {/if}
@@ -71,6 +75,7 @@
   .nav:hover { background: var(--surface-2); color: var(--text); }
   .nav.on { background: var(--accent-soft); color: var(--text); }
   .k { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+  .count { margin-left: auto; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
   .badge { margin-left: auto; background: var(--warning-soft); color: var(--warning); font-size: 12px; font-weight: 600; padding: 0 7px; border-radius: var(--r-control); line-height: 20px; }
   .sec { font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 18px 10px 6px; }
   .tree { flex: 1; overflow-y: auto; min-height: 0; margin: 0 -4px; padding: 0 4px; display: flex; flex-direction: column; gap: 1px; }

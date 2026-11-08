@@ -269,3 +269,111 @@ def test_folder_filter_and_listing(client, services, tmp_path, no_model):
     hits = client.get("/api/search", params={"q": "facture", "folder": "Impots"}).json()["items"]
     assert sorted(d["original_name"] for d in hits) == ["a.txt", "b.txt"]
     assert [d["original_name"] for d in client.get("/api/search", params={"q": "bordel"}).json()["items"]] == ["c.txt"]  # folder names are searchable
+
+
+def test_hide_keeps_everything_but_leaves_lists_and_search(client, services, cfg, tmp_path, no_model):
+    f = tmp_path / "secret.txt"
+    f.write_text("Facture confidentielle n° 7\nTotal TTC 120,00", encoding="utf-8")
+    g = tmp_path / "autre.txt"
+    g.write_text("Facture ordinaire n° 8\nTotal TTC 80,00", encoding="utf-8")
+    doc_id = upload(client, f, name="Perso/secret.txt")["id"]
+    upload(client, g, name="Perso/autre.txt")
+    client.post(f"/api/documents/{doc_id}/tags", json={"name": "garde-moi"})
+    names = lambda **kw: sorted(d["original_name"] for d in client.get("/api/documents", params=kw).json()["items"])
+    found = lambda q: sorted(d["original_name"] for d in client.get("/api/search", params={"q": q}).json()["items"])
+    assert found("facture") == ["autre.txt", "secret.txt"]
+
+    r = client.patch(f"/api/documents/{doc_id}", json={"hidden": True})
+    assert r.status_code == 200 and r.json()["hidden"] is True
+    assert names() == ["autre.txt"] and found("facture") == ["autre.txt"] and found("confidentielle") == []
+    assert {f["path"]: f["count"] for f in client.get("/api/folders").json()["items"]} == {"Perso": 1}
+    assert names(hidden="1") == ["secret.txt"]                              # the « Masqués » category
+    assert client.get("/api/queue").json()["hidden"] == 1
+    assert client.get("/api/admin/status").json()["by_status"] == {"done": 2}  # still analysed, nothing was deleted
+
+    # the file moves and the analysis is redone: it stays hidden, and stays out of the search
+    (cfg.source_dir / "Perso" / "secret.txt").rename(cfg.source_dir / "Perso" / "renommé.txt")
+    services.scanner.scan()
+    client.post(f"/api/documents/{doc_id}/reprocess")
+    drain(services)
+    assert names(hidden="1") == ["renommé.txt"] and found("confidentielle") == []
+
+    client.patch(f"/api/documents/{doc_id}", json={"hidden": False})       # shown again, with its tags
+    assert names() == ["autre.txt", "renommé.txt"] and found("confidentielle") == ["renommé.txt"]
+    assert "garde-moi" in {t["name"] for t in client.get(f"/api/documents/{doc_id}").json()["tags"]}
+    assert names(hidden="1") == [] and client.get("/api/queue").json()["hidden"] == 0
+
+
+def test_editing_the_title_and_date_from_papyrus(client, services, tmp_path, no_model):
+    f = tmp_path / "scan0001.txt"
+    f.write_text("Facture n° 5\nTotal TTC 12,00", encoding="utf-8")
+    doc_id = upload(client, f)["id"]
+    r = client.patch(f"/api/documents/{doc_id}", json={"title": "  Ma   facture de plomberie  ", "doc_date": "2025-03-04"})
+    assert r.status_code == 200
+    doc = r.json()
+    assert doc["title"] == "Ma facture de plomberie" and doc["title_manual"] and doc["date"] == "2025-03-04" and doc["date_source"] == "manual"
+    assert [d["id"] for d in client.get("/api/search", params={"q": "plomberie"}).json()["items"]] == [doc_id]  # indexed under the new title
+    assert client.patch(f"/api/documents/{doc_id}", json={"doc_date": "pas une date"}).status_code == 422
+
+
+def test_the_key_comes_from_the_account_password(tmp_path, no_model_dir=None):
+    """Saved PDF passwords are encrypted with a key derived from the login password: kept in memory after a login,
+    gone from memory after a restart (until the next login), unreadable after a password change."""
+    import pikepdf
+
+    cfg = make_config(tmp_path)
+    svc = Services(cfg)
+    svc.embedder.model_dirs = [tmp_path / "none"]
+    app = create_app(cfg, svc, start_worker=False)
+    protected = docgen.pdf(tmp_path / "p.pdf", ["BULLETIN DE SALAIRE", "Net à payer 1 000"], user_password="pdf-secret-pw")
+    with TestClient(app) as c:
+        assert svc.vault.status() == {"saved": 0, "locked": False, "unlocked_accounts": 0}
+        c.post("/api/auth/login", json={"user": "jerome", "password": "correct horse battery"})
+        csrf = {"X-CSRF-Token": c.cookies.get("papyrus_csrf")}
+        assert svc.vault.is_unlocked("jerome")
+        place(svc, protected)
+        svc.scanner.scan()
+        drain(svc)
+        doc_id = c.get("/api/locked").json()["items"][0]["id"]
+        r = c.post(f"/api/documents/{doc_id}/unlock", json={"password": "pdf-secret-pw"}, headers=csrf).json()
+        assert r["remembered"] is True
+    svc.close()
+
+    # a restart: the session cookie is still valid, but the key is not in memory
+    svc2 = Services(cfg)
+    svc2.embedder.model_dirs = [tmp_path / "none"]
+    app2 = create_app(cfg, svc2, start_worker=False)
+    with TestClient(app2) as c2:
+        c2.cookies.set("papyrus_session", c.cookies.get("papyrus_session"))
+        assert c2.get("/api/auth/me").status_code == 200
+        assert svc2.vault.status()["locked"] is True and svc2.vault.candidates("x") == []
+        assert c2.get("/api/queue").json()["vault_locked"] is True
+        # a new protected PDF with the same password waits: nobody has logged in since the restart
+        place(svc2, docgen.pdf(tmp_path / "q.pdf", ["autre"], user_password="pdf-secret-pw"), "q.pdf")
+        svc2.scanner.scan()
+        drain(svc2)
+        assert len(c2.get("/api/locked").json()["items"]) == 1
+        # logging in brings the key back, and the waiting PDF opens by itself on the next analysis
+        c2.post("/api/auth/login", json={"user": "jerome", "password": "correct horse battery"})
+        assert svc2.vault.status()["locked"] is False
+        drain(svc2)  # the login put the waiting PDFs back in the queue
+        assert c2.get("/api/locked").json()["items"] == []
+    svc2.close()
+
+    # the account password changes: what was saved cannot be read any more and is dropped at the next login
+    cfg.htpasswd_path.write_text(f"jerome:{htpasswd.hash_password('a brand new password')}\n")
+    import os
+    os.utime(cfg.htpasswd_path, (time.time() + 9, time.time() + 9))
+    svc3 = Services(cfg)
+    assert svc3.vault.count() >= 1
+    assert svc3.vault.unlock("jerome", "a brand new password") >= 1
+    assert svc3.vault.count() == 0 and svc3.vault.candidates("x") == []
+    svc3.close()
+
+
+def test_basic_auth_scripts_also_open_the_vault(secured):
+    c, cfg, svc = secured
+    token = base64.b64encode(b"jerome:correct horse battery").decode()
+    assert not svc.vault.is_unlocked("jerome")
+    assert c.get("/api/documents", headers={"Authorization": f"Basic {token}"}).status_code == 200
+    assert svc.vault.is_unlocked("jerome")

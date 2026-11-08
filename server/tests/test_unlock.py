@@ -23,7 +23,7 @@ def test_owner_password_only_is_removed_silently(client, services, cfg, tmp_path
     assert len(client.get(f"/api/documents/{result['id']}").json()["locations"]) == 2
 
 
-def test_user_password_flow(client, services, cfg, tmp_path, no_model, capfd):
+def test_user_password_flow(client, services, vault, cfg, tmp_path, no_model, capfd):
     secret = "tr0ub4dor-secret-pw"
     src = docgen.pdf(tmp_path / "locked.pdf", ["BULLETIN DE SALAIRE", "Salaire brut 4 000,00", "Net à payer 3 120,00", "cotisations"], user_password=secret)
     original = src.read_bytes()
@@ -56,12 +56,12 @@ def test_user_password_flow(client, services, cfg, tmp_path, no_model, capfd):
     assert upload(client, src, name="ailleurs/locked.pdf")["status"] == "duplicate"
 
     # the password is kept (by the document's hash) but only encrypted: never in clear in the database, the files, the
-    # logs, the export or any API answer
+    # logs, the export or any API answer; and there is no key file anywhere
     assert client.get("/api/admin/status").json()["passwords"] == 1
     for path in cfg.data_dir.rglob("*"):
-        if path.is_file() and path.name != "secret.key":
+        if path.is_file():
             assert secret.encode() not in path.read_bytes(), path
-    assert (cfg.data_dir / "secret.key").stat().st_mode & 0o077 == 0  # the key file is private
+    assert not list(cfg.data_dir.rglob("*.key"))
     out, err = capfd.readouterr()
     assert secret not in out + err
     assert secret not in str(client.get("/api/documents").json())
@@ -83,7 +83,7 @@ def test_unlock_tries_the_same_password_on_other_waiting_pdfs(client, services, 
     assert client.get("/api/documents").json()["total"] == 3
 
 
-def test_saved_passwords_open_later_protected_pdfs_by_themselves(client, services, cfg, tmp_path, no_model):
+def test_saved_passwords_open_later_protected_pdfs_by_themselves(client, services, vault, cfg, tmp_path, no_model):
     first = upload(client, docgen.payslip_fr(tmp_path / "s1.pdf", "Atelier Morel SAS", "73282932000074", 1, 2026, password="mon-mot-de-passe"))
     assert first["status"] == "password_required"
     assert client.post(f"/api/documents/{first['id']}/unlock", json={"password": "mon-mot-de-passe"}).status_code == 200
@@ -109,14 +109,14 @@ def test_saved_passwords_open_later_protected_pdfs_by_themselves(client, service
     assert third["status"] == "password_required"
 
 
-def test_password_not_kept_when_the_user_says_so(client, services, tmp_path, no_model):
+def test_password_not_kept_when_the_user_says_so(client, services, vault, tmp_path, no_model):
     a = upload(client, docgen.pdf(tmp_path / "a.pdf", ["a"], user_password="pw-secret-1"))["id"]
     assert client.post(f"/api/documents/{a}/unlock", json={"password": "pw-secret-1", "remember": False}).status_code == 200
     assert client.get("/api/admin/status").json()["passwords"] == 0
     assert upload(client, docgen.pdf(tmp_path / "b.pdf", ["b"], user_password="pw-secret-1"))["status"] == "password_required"
 
 
-def test_removing_a_document_forgets_its_password(client, services, tmp_path, no_model):
+def test_removing_a_document_forgets_its_password(client, services, vault, tmp_path, no_model):
     a = upload(client, docgen.pdf(tmp_path / "a.pdf", ["a"], user_password="pw-secret-2"))["id"]
     client.post(f"/api/documents/{a}/unlock", json={"password": "pw-secret-2"})
     assert client.get("/api/admin/status").json()["passwords"] == 1
@@ -129,3 +129,11 @@ def test_try_others_off(client, services, tmp_path, no_model):
     upload(client, docgen.pdf(tmp_path / "b.pdf", ["b"], user_password="pw"))
     r = client.post(f"/api/documents/{a}/unlock", json={"password": "pw", "try_others": False}).json()
     assert r["others"] == [] and r["remaining"] == 1
+
+
+def test_without_a_login_nothing_is_kept(client, services, tmp_path, no_model):
+    """AUTH_DISABLED, or a session that outlived a restart: no key in memory, so no password can be saved."""
+    a = upload(client, docgen.pdf(tmp_path / "a.pdf", ["a"], user_password="pw-secret-3"))["id"]
+    r = client.post(f"/api/documents/{a}/unlock", json={"password": "pw-secret-3"}).json()
+    assert r["status"] == "queued" and r["remembered"] is False and r["asked_to_remember"] is True  # opened, not kept
+    assert client.get("/api/admin/status").json()["passwords"] == 0

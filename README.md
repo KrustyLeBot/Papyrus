@@ -25,12 +25,17 @@ French UI, French and Swiss paperwork (payslips, notary papers, invoices…). Co
 
 - **Identity is the SHA-256 of a file's content.** Same content at two paths = one document with two locations.
   Moved or renamed = the location changes, the document keeps its tags, its title and date if you typed them.
-  Edited in place = same document, analysed again (what you typed by hand stays).
+  Edited in place (you open a PDF or DOCX, change it and save it at the same path: new content, same file) = same
+  document, analysed again; what you typed by hand stays.
 - **Missing is not deleted.** A document whose files are gone is hidden from lists and search but kept; it comes
   back by itself when a file with the same content reappears, anywhere. An empty or unmounted source folder removes
   nothing (a warning shows in the UI). *Administration → Oublier les documents introuvables* forgets them for good.
-- **« Retirer de Papyrus »** (document page) deletes the analysis and keeps that content out of every later scan,
-  wherever a copy sits. The file itself stays. *Administration → Réintégrer les documents retirés* undoes it.
+- **Masquer** (document page): the document leaves the timeline, the folders' counts and the search, and goes to the
+  **Masqués** category of the sidebar, where it can be shown again. Nothing is deleted: analysis, tags and the tracking
+  of moves are kept. From there, *Retirer définitivement* deletes the analysis and keeps that content out of every later
+  scan, wherever a copy sits (*Administration → Réintégrer les documents retirés* undoes it). The file is never touched.
+- **Title, date, tags** can be edited on the document page. They are Papyrus' labels: the file name on disk does not
+  change (Papyrus cannot write there). A title or date you typed is kept by every later analysis.
 - **Skipped**: hidden files and folders, `@eaDir`, `#recycle`, `~$*` Office locks, `*.tmp`, symbolic links, files over
   `SCAN_MAX_FILE_MB`, and files modified in the last `SCAN_SETTLE_SEC` seconds (still being copied).
 - **Types of files**: `pdf,docx` by default (`SCAN_EXTENSIONS`; jpg, png, txt and md are already understood and only
@@ -57,9 +62,13 @@ French UI, French and Swiss paperwork (payslips, notary papers, invoices…). Co
   waiting PDF, and **kept** (encrypted, tied to the SHA-256 of the document it opened) so every later protected PDF
   found in your folders is tried against it and opens by itself. Untick « Retenir ce mot de passe » to keep nothing.
 - Your original is never touched; the decrypted copy under `data/unlocked/` is what Papyrus reads and shows.
-- Passwords are stored Fernet-encrypted. The key is `PAPYRUS_KEY` (set it: a copy of the data folder alone is then
-  useless) or, by default, a random `data/secret.key` next to the database. They are never logged, never returned by
-  the API, never exported. *Administration → Oublier tous les mots de passe* wipes them.
+- **The key is your login password.** Saved passwords are encrypted with a key derived from the password of your
+  Papyrus account (`conf/httpasswd`), nothing else: no key file, no setting. Papyrus only knows that password while you
+  log in, so the key lives in memory from your login until the container stops. Consequences: a copy of `data/` alone
+  cannot read the saved passwords; after a restart they wait for your next login (a banner says so, and the waiting
+  PDFs are retried as soon as you are in); if you change your login password the saved ones are lost and you type them
+  again (documents already unlocked keep their decrypted copy). With `AUTH_DISABLED=true` there is no key, so nothing is kept.
+- They are never logged, never returned by the API, never exported. *Administration → Oublier tous les mots de passe* wipes them.
 
 ### Search
 
@@ -114,12 +123,11 @@ data/
 ├── thumbs/        thumbnails
 ├── unlocked/      decrypted copies of protected PDFs (and restriction-free copies)
 ├── models/        embeddings model (downloaded at first start)
-├── backups/       daily consistent snapshots of the database (7 kept)
-└── secret.key     key of the saved PDF passwords (unless PAPYRUS_KEY is set)
+└── backups/       daily consistent snapshots of the database (7 kept)
 ```
 
 Your documents are the source of truth, the database is rebuildable: lose `data/` and the next scan rebuilds the index
-(only what you typed by hand, and the saved passwords, are lost). Back up `data/` with the rest (Hyper Backup);
+(only what you typed by hand, and the saved PDF passwords, are lost). Back up `data/` with the rest (Hyper Backup);
 the daily snapshot in `backups/` is always consistent, and `python -m papyrus backup` makes one on demand.
 Restoring: stop the container, put `data/` back (or a snapshot renamed `papyrus.db`), start it.
 

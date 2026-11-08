@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS documents (
     updated_at      TEXT NOT NULL,
     processed_at    TEXT,
     unlocked_at     TEXT,
-    missing_at      TEXT
+    missing_at      TEXT,
+    hidden          INTEGER NOT NULL DEFAULT 0   -- hidden by the user: kept, analysed, out of lists and search
 );
 CREATE INDEX IF NOT EXISTS documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS documents_date ON documents(doc_date);
@@ -74,12 +75,15 @@ CREATE TABLE IF NOT EXISTS doc_keys (
     PRIMARY KEY (doc_id, key, value)
 );
 
--- passwords of protected PDFs, by the SHA-256 of the document they opened; encrypted with the Papyrus key (vault.py)
+-- passwords of protected PDFs, by the SHA-256 of the document they opened and the account that saved them;
+-- encrypted with a key derived from that account's password (vault.py)
 CREATE TABLE IF NOT EXISTS doc_passwords (
-    sha256     TEXT PRIMARY KEY,
+    owner      TEXT NOT NULL,
+    sha256     TEXT NOT NULL,
     secret     BLOB NOT NULL,
     created_at TEXT NOT NULL,
-    used_at    TEXT NOT NULL
+    used_at    TEXT NOT NULL,
+    PRIMARY KEY (owner, sha256)
 );
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -128,7 +132,12 @@ class Database:
             if old:
                 raise SystemExit(f"papyrus: {path} comes from an older Papyrus (upload and groups). The folders model starts "
                                  "from a new data folder: point /data at an empty one.")
+            if "owner" not in {r["name"] for r in conn.execute("PRAGMA table_info(doc_passwords)")} and \
+                    conn.execute("SELECT name FROM sqlite_master WHERE name = 'doc_passwords'").fetchone():
+                conn.execute("DROP TABLE doc_passwords")  # saved under a key file, unreadable by the account-password key anyway
             conn.executescript(SCHEMA)
+            if "hidden" not in {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}:  # a database from before « Masqués »
+                conn.execute("ALTER TABLE documents ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def _open(self) -> sqlite3.Connection:

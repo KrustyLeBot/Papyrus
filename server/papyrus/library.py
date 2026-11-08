@@ -21,6 +21,7 @@ class Outcome:
     doc_id: int | None = None
     name: str = ""
     message: str = ""
+    remembered: bool = False
 
 
 class Library:
@@ -37,7 +38,7 @@ class Library:
             "FROM documents d WHERE d.status = 'password_required' ORDER BY d.id")
         return [dict(r) for r in rows]
 
-    def unlock(self, doc_id: int, password: str, remember: bool = True) -> Outcome:
+    def unlock(self, doc_id: int, password: str, remember: bool = True, owner: str = "") -> Outcome:
         """Decrypts one waiting PDF into a copy under /data (the original stays as it is). The password is used here and
         nowhere else: it is not stored, logged or returned."""
         row = self.db.conn.execute("SELECT * FROM documents WHERE id = ? AND status = 'password_required'", (doc_id,)).fetchone()
@@ -52,11 +53,28 @@ class Library:
         with self.db.tx():
             self.db.conn.execute("UPDATE documents SET work_path = ?, status = 'pending', unlocked_at = ?, updated_at = ? WHERE id = ?",
                                  (f"unlocked/{dst.name}", now(), now(), doc_id))
-        if remember and self.vault is not None:
-            self.vault.remember(row["sha256"], password)  # by the document's hash, encrypted; see vault.py
-        return Outcome("queued", doc_id, row["original_name"], "Déverrouillé.")
+        saved = bool(remember and self.vault is not None and owner and self.vault.remember(owner, row["sha256"], password))
+        return Outcome("queued", doc_id, row["original_name"], "Déverrouillé.", remembered=saved)
 
-    # ---------------------------------------------------------------- removal (the file on disk stays)
+    # ---------------------------------------------------------------- hiding (everything is kept)
+
+    def set_hidden(self, doc_id: int, hidden: bool) -> bool:
+        """Hides a document (out of the timeline, the folders' counts and the search; still analysed, still tracked when
+        the file moves) or shows it again."""
+        from .pipeline import index_document
+
+        row = self.db.conn.execute("SELECT id, status FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        if row is None:
+            return False
+        with self.db.tx():
+            self.db.conn.execute("UPDATE documents SET hidden = ?, updated_at = ? WHERE id = ?", (int(hidden), now(), doc_id))
+            if hidden:
+                self.db.conn.execute("DELETE FROM docs_fts WHERE rowid = ?", (doc_id,))
+            elif row["status"] == "done":
+                index_document(self.db, doc_id)
+        return True
+
+    # ---------------------------------------------------------------- removal for good (the file on disk stays)
 
     def _drop_files(self, row) -> None:
         if row["work_path"]:

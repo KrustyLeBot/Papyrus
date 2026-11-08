@@ -50,6 +50,13 @@ def client(cfg, services):
 
 
 @pytest.fixture
+def vault(services):
+    """The key of the (auth-disabled) account in memory, as after a login: saved PDF passwords can be kept and used."""
+    services.vault.unlock("local", "the account password")
+    return services.vault
+
+
+@pytest.fixture
 def no_model(cfg, services):
     """Forces degraded mode (rules, keys and full-text only): deterministic whatever the machine holds."""
     services.embedder.model_dirs = [cfg.data_dir / "no-model"]

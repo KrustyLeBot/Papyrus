@@ -3,7 +3,7 @@ import { get as apiGet, setUnauthorizedHandler } from './api.js';
 
 export const me = writable(undefined); // undefined: not known yet, null: logged out
 export const folders = writable([]); // flat: {path, count} per folder that holds documents
-export const queue = writable({ items: [], current: null, jobs: [], locked: 0 });
+export const queue = writable({ items: [], current: null, jobs: [], locked: 0, hidden: 0 });
 export const admin = writable(null);
 export const toasts = writable([]);
 export const paletteOpen = writable(false);
@@ -71,7 +71,7 @@ export function startQueuePolling() {
     const q = await refreshQueue();
     const busy = q && (q.items.some((i) => i.status !== 'error') || q.current);
     const scanned = (before.scan?.last?.at || '') !== (q?.scan?.last?.at || '');
-    if (q && (before.items.length !== q.items.length || before.locked !== q.locked || scanned)) {
+    if (q && (before.items.length !== q.items.length || before.locked !== q.locked || before.hidden !== q.hidden || scanned)) {
       loadFolders();
       docsVersion.update((n) => n + 1);
     }
