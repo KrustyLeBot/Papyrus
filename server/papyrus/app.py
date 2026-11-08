@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -21,7 +21,6 @@ from pydantic import BaseModel, Field
 from . import __version__, identifiers
 from .auth import CSRF_COOKIE, SESSION_COOKIE, Auth, client_ip, cookie_secure
 from .config import Config
-from .db import blob_to_vec
 from .pipeline import add_tag, index_document, prune_tags, reembed_all
 from .services import Services
 
@@ -41,42 +40,22 @@ class LoginBody(BaseModel):
 class UnlockBody(BaseModel):
     password: str = Field(max_length=1000)
     try_others: bool = True
+    remember: bool = True  # keep it (encrypted, by the document's hash) for the next protected PDFs
 
 
 class DocPatch(BaseModel):
     title: str | None = Field(default=None, max_length=300)
     doc_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    locked: bool | None = None
 
 
 class TagBody(BaseModel):
     name: str = Field(min_length=1, max_length=60)
 
 
-class GroupBody(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-    parent_id: int | None = None
-    color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
-
-
-class GroupPatch(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-    parent_id: int | None = None
-    move: bool = False  # parent_id is applied only when move is true (parent_id null = top level)
-    color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
-
-
-class MergeBody(BaseModel):
-    into: int
-
-
-class AssignBody(BaseModel):
-    doc_ids: list[int] = Field(min_length=1, max_length=1000)
-    from_group: int | None = None
-
-
-class ReclassifyBody(BaseModel):
-    group_id: int | None = None
+class SearchSettingsBody(BaseModel):
+    semantic_min: float = Field(ge=0.5, le=0.95)
+    prefix: bool = True
+    fuzzy: bool = True
 
 
 # ---------------------------------------------------------------------------------------------- helpers
@@ -93,40 +72,6 @@ def _rss_mb() -> float | None:
     except OSError:
         pass
     return None
-
-
-class GroupIndex:
-    """Every group, for naming a document's groups by their path (Fiches de paie / Atelier Morel SAS)."""
-
-    def __init__(self, conn):
-        self.rows = {r["id"]: dict(r) for r in conn.execute(
-            "SELECT id, parent_id, name, color, is_inbox, type_name, auto FROM groups")}
-
-    def root(self, gid: int) -> dict:
-        row = self.rows[gid]
-        seen = set()
-        while row["parent_id"] is not None and row["parent_id"] in self.rows and row["id"] not in seen:
-            seen.add(row["id"])
-            row = self.rows[row["parent_id"]]
-        return row
-
-    def path(self, gid: int) -> str:
-        names, row, seen = [], self.rows.get(gid), set()
-        while row is not None and row["id"] not in seen:
-            seen.add(row["id"])
-            names.append(row["name"])
-            row = self.rows.get(row["parent_id"]) if row["parent_id"] is not None else None
-        return " / ".join(reversed(names))
-
-    def describe(self, gid: int, source: str | None = None) -> dict | None:
-        if gid not in self.rows:
-            return None
-        row = self.rows[gid]
-        out = {"id": gid, "name": row["name"], "path": self.path(gid), "color": self.root(gid)["color"] or "#7C8AA5",
-               "inbox": bool(row["is_inbox"])}
-        if source:
-            out["source"] = source
-        return out
 
 
 def create_app(config: Config | None = None, services: Services | None = None, start_worker: bool = True) -> FastAPI:
@@ -244,35 +189,30 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         if not ids:
             return []
         marks = ",".join("?" * len(ids))
-        gindex = GroupIndex(db.conn)
-        groups: dict[int, list] = {i: [] for i in ids}
-        for r in db.conn.execute(f"SELECT doc_id, group_id, source FROM doc_groups WHERE doc_id IN ({marks})", ids):
-            described = gindex.describe(r["group_id"], r["source"])
-            if described:
-                groups[r["doc_id"]].append(described)
+        places: dict[int, list] = {i: [] for i in ids}
+        for r in db.conn.execute(f"SELECT doc_id, path, folder FROM locations WHERE doc_id IN ({marks}) ORDER BY id", ids):
+            places[r["doc_id"]].append({"path": r["path"], "folder": r["folder"]})
         tags: dict[int, list] = {i: [] for i in ids}
         for r in db.conn.execute(f"SELECT dt.doc_id, t.id, t.name, dt.source FROM doc_tags dt JOIN tags t ON "
                                  f"t.id = dt.tag_id WHERE dt.doc_id IN ({marks}) ORDER BY t.name", ids):
             tags[r["doc_id"]].append({"id": r["id"], "name": r["name"], "source": r["source"]})
         out = []
         for r in rows:
+            where = places[r["id"]]
             item = {
                 "id": r["id"], "title": r["title"], "date": r["doc_date"], "date_source": r["date_source"],
                 "created_at": r["created_at"], "status": r["status"], "ext": r["ext"], "pages": r["pages"],
-                "size": r["size"], "original_name": r["original_name"], "error": r["error"],
-                "groups": sorted(groups[r["id"]], key=lambda g: g["path"]), "tags": tags[r["id"]],
+                "size": r["size"], "original_name": r["original_name"], "error": r["error"], "tags": tags[r["id"]],
                 "types": json.loads(r["types"] or "[]"),
                 "thumb": f"/api/documents/{r['id']}/thumb?v={quote(r['updated_at'])}" if r["status"] == "done" else None,
-                "locked": bool(r["locked"]), "suggestion_applied": bool(r["suggestion_applied"]),
-                "summary": r["summary"] if full else (r["summary"] or "")[:200],
+                "path": where[0]["path"] if where else "", "folder": where[0]["folder"] if where else "",
+                "copies": len(where), "summary": r["summary"] if full else (r["summary"] or "")[:200],
             }
             if full:
                 item.update({
                     "text": r["text"], "ocr": bool(r["ocr"]), "unlocked_at": r["unlocked_at"],
                     "processed_at": r["processed_at"], "title_manual": bool(r["title_manual"]),
-                    "has_embedding": r["embedding"] is not None,
-                    "suggestions": [dict(s, group=gindex.describe(s["group_id"]))
-                                    for s in json.loads(r["suggestions"] or "[]") if gindex.describe(s["group_id"])],
+                    "has_embedding": r["embedding"] is not None, "locations": where,
                 })
             out.append(item)
         return out
@@ -286,16 +226,13 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     def touch(doc_id: int) -> None:
         db.conn.execute("UPDATE documents SET updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now') WHERE id = ?", (doc_id,))
 
-    def group_ids_for(group: int | None, include_children: bool) -> list[int] | None:
-        if group is None:
-            return None
-        return svc.grouper.descendants(group) if include_children else [group]
+    HIDDEN = "('password_required', 'missing')"
 
     # ------------------------------------------------------------------------------------------ documents
 
     @app.get("/api/documents")
     def list_documents(_u: str = Depends(user), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
-                       group: int | None = None, children: bool = True, tag: str | None = None,
+                       folder: str | None = None, children: bool = True, tag: str | None = None,
                        type: str | None = None, status: str | None = None,
                        date_from: str | None = None, date_to: str | None = None):
         clauses, params = [], []
@@ -305,11 +242,17 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             clauses.append("status = ?")
             params.append(status)
         else:
-            clauses.append("status != 'password_required'")
-        gids = group_ids_for(group, children)
-        if gids is not None:
-            clauses.append(f"id IN (SELECT doc_id FROM doc_groups WHERE group_id IN ({','.join('?' * len(gids))}))")
-            params += gids
+            clauses.append(f"status NOT IN {HIDDEN}")
+        if folder == ".":  # the files lying at the root of the source folder
+            clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = '')")
+        elif folder is not None and folder != "":
+            like = folder.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+            if children:
+                clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = ? OR folder LIKE ? ESCAPE '\\')")
+                params += [folder, like]
+            else:
+                clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = ?)")
+                params.append(folder)
         if tag:
             clauses.append("id IN (SELECT dt.doc_id FROM doc_tags dt JOIN tags t ON t.id = dt.tag_id WHERE t.name = ?)")
             params.append(tag)
@@ -326,7 +269,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         total = db.conn.execute(f"SELECT COUNT(*) FROM documents {where}", params).fetchone()[0]
         rows = db.conn.execute(
             f"SELECT id, title, doc_date, date_source, created_at, updated_at, status, ext, pages, size, original_name, "
-            f"error, types, locked, suggestion_applied, summary FROM documents {where} "
+            f"error, types, summary FROM documents {where} "
             f"ORDER BY COALESCE(doc_date, substr(created_at, 1, 10)) DESC, id DESC LIMIT ? OFFSET ?",
             params + [limit, offset]).fetchall()
         return {"items": serialize(rows), "total": total, "offset": offset, "limit": limit}
@@ -335,12 +278,9 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     def document(doc_id: int, _u: str = Depends(user)):
         row = get_doc(doc_id)
         item = serialize([row], full=True)[0]
-        keys = [dict(k) for k in db.conn.execute("SELECT key, value, label FROM doc_keys WHERE doc_id = ? ORDER BY rowid",
-                                                 (doc_id,))]
-        item["keys"] = keys
-        item["sensitive"] = identifiers.mask_sensitive(row["text"])[1] + [
-            {"kind": "masked", "label": "Masqué", "masked": m} for m in []]
-        # the stored text is already masked; list what was masked from the bullets left in it
+        item["keys"] = [dict(k) for k in db.conn.execute("SELECT key, value, label FROM doc_keys WHERE doc_id = ? ORDER BY rowid",
+                                                         (doc_id,))]
+        # the stored text is already masked: what was masked is read back from the bullets left in it
         item["sensitive"] = [{"label": "IBAN", "masked": m.group(0)} for m in
                              re.finditer(r"[A-Z]{2}\d{2}(?: ?[A-Z0-9•]{1,4}){3,8}", row["text"]) if "•" in m.group(0)][:5]
         return item
@@ -354,25 +294,26 @@ def create_app(config: Config | None = None, services: Services | None = None, s
                 db.conn.execute("UPDATE documents SET title = ?, title_manual = 1 WHERE id = ?", (title, doc_id))
             if body.doc_date is not None:
                 db.conn.execute("UPDATE documents SET doc_date = ?, date_source = 'manual' WHERE id = ?", (body.doc_date, doc_id))
-            if body.locked is not None:
-                db.conn.execute("UPDATE documents SET locked = ? WHERE id = ?", (int(body.locked), doc_id))
             touch(doc_id)
-            index_document(db, doc_id)
-            if body.doc_date is not None and row["status"] == "done":
-                svc.processor.auto_tags(doc_id)
+            if row["status"] == "done":
+                if body.doc_date is not None:
+                    svc.processor.auto_tags(doc_id)
+                else:
+                    index_document(db, doc_id)
         return document(doc_id, _u)
 
     @app.delete("/api/documents/{doc_id}")
-    def delete_document(doc_id: int, _u: str = Depends(user)):
+    def forget_document(doc_id: int, _u: str = Depends(user)):
+        """« Retirer de Papyrus »: the analysis is deleted and the content ignored by later scans; the file stays."""
         get_doc(doc_id)
-        svc.library.delete(doc_id)
+        svc.library.forget(doc_id)
         return {"ok": True}
 
     @app.post("/api/documents/{doc_id}/reprocess")
     def reprocess(doc_id: int, _u: str = Depends(user)):
         row = get_doc(doc_id)
-        if row["status"] == "password_required":
-            raise _err(409, "Ce PDF doit d'abord être déverrouillé.")
+        if row["status"] in ("password_required", "missing"):
+            raise _err(409, "Ce document n'est pas analysable pour l'instant (mot de passe ou fichier introuvable).")
         with db.tx():
             db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE id = ?", (doc_id,))
         svc.worker.wake()
@@ -382,17 +323,17 @@ def create_app(config: Config | None = None, services: Services | None = None, s
     def document_file(doc_id: int, download: bool = False, _u: str = Depends(user)):
         row = get_doc(doc_id)
         if row["status"] == "password_required":
-            raise _err(409, "Ce PDF est encore protégé.")
-        path = config.data_dir / row["path"]
-        if not path.is_file():
-            raise _err(404, "Fichier introuvable sur le disque.")
+            raise _err(409, "Ce PDF est encore protégé : déverrouille-le d'abord.")
+        path = svc.processor.path_of(row)
+        if path is None:
+            raise _err(404, "Le fichier n'est plus dans le dossier analysé.")
         disposition = "attachment" if download else "inline"
         name = row["original_name"]
         ascii_name = re.sub(r'[^A-Za-z0-9._ -]', "_", name)
         headers = {"Content-Disposition": f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}",
-                   "Cache-Control": "private, max-age=3600"}
+                   "Cache-Control": "private, max-age=300"}
         if row["ext"] != "pdf":
-            # an uploaded image or text is never a page of this site: no script runs from it
+            # a document is never a page of this site: no script runs from it
             headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
         return FileResponse(path, media_type=row["mime"] or "application/octet-stream", headers=headers)
 
@@ -438,45 +379,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             index_document(db, doc_id)
         return document(doc_id, _u)
 
-    @app.post("/api/documents/{doc_id}/suggestions/{group_id}/accept")
-    def accept_suggestion(doc_id: int, group_id: int, _u: str = Depends(user)):
-        get_doc(doc_id)
-        svc.grouper.add_manual(doc_id, group_id)
-        with db.tx():
-            touch(doc_id)
-        return document(doc_id, _u)
-
-    # ------------------------------------------------------------------------------------------ upload & unlock
-
-    @app.post("/api/upload")
-    def upload(request: Request, files: list[UploadFile] = File(...), _u: str = Depends(user)):
-        limit = config.max_upload_mb * 1024 * 1024
-        results = []
-        for item in files:
-            name = item.filename or "document"
-            tmp = svc.library.tmp_dir() / f"up-{uuid.uuid4().hex}"
-            size = 0
-            too_big = False
-            with tmp.open("wb") as out:
-                while True:
-                    block = item.file.read(1 << 20)
-                    if not block:
-                        break
-                    size += len(block)
-                    if size > limit:
-                        too_big = True
-                        break
-                    out.write(block)
-            if too_big:
-                tmp.unlink(missing_ok=True)
-                results.append({"name": name, "status": "rejected",
-                                "message": f"Fichier trop volumineux (limite {config.max_upload_mb} Mo)."})
-                continue
-            intake = svc.library.ingest(tmp, name)
-            results.append({"name": intake.name or name, "status": intake.status, "id": intake.doc_id,
-                            "message": intake.message, "title": intake.title})
-        svc.worker.wake()
-        return {"results": results}
+    # ------------------------------------------------------------------------------------------ protected PDFs
 
     @app.get("/api/locked")
     def locked(_u: str = Depends(user)):
@@ -484,7 +387,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
 
     @app.post("/api/documents/{doc_id}/unlock")
     def unlock(doc_id: int, body: UnlockBody, _u: str = Depends(user)):
-        first = svc.library.unlock(doc_id, body.password)
+        first = svc.library.unlock(doc_id, body.password, body.remember)
         if first.status == "rejected":
             raise _err(409, first.message)
         if first.status == "password_required":
@@ -492,22 +395,46 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         others = []
         if body.try_others:
             for item in svc.library.locked():
-                result = svc.library.unlock(item["id"], body.password)
-                if result.status in ("queued", "duplicate"):
-                    others.append({"id": result.doc_id, "name": result.name, "status": result.status})
+                result = svc.library.unlock(item["id"], body.password, body.remember)
+                if result.status == "queued":
+                    others.append({"id": result.doc_id, "name": result.name})
         svc.worker.wake()
-        return {"status": first.status, "id": first.doc_id, "others": others,
-                "remaining": len(svc.library.locked())}
+        return {"status": first.status, "id": first.doc_id, "others": others, "remaining": len(svc.library.locked())}
+
+    # ------------------------------------------------------------------------------------------ folders & scan
+
+    @app.get("/api/folders")
+    def folders(_u: str = Depends(user)):
+        rows = db.conn.execute(
+            f"SELECT l.folder, COUNT(DISTINCT l.doc_id) AS n FROM locations l JOIN documents d ON d.id = l.doc_id "
+            f"WHERE d.status NOT IN {HIDDEN} GROUP BY l.folder ORDER BY l.folder").fetchall()
+        return {"items": [{"path": r["folder"], "count": r["n"]} for r in rows]}
+
+    def scan_info() -> dict:
+        st = dict(svc.scanner.state)
+        st["source"] = str(config.source_dir)
+        st["interval"] = config.scan_interval
+        st["extensions"] = sorted(config.extensions)
+        return st
+
+    @app.get("/api/scan")
+    def scan_status(_u: str = Depends(user)):
+        return scan_info()
+
+    @app.post("/api/scan")
+    def scan_now(_u: str = Depends(user)):
+        svc.scanner.scan_now()
+        return scan_info()
 
     # ------------------------------------------------------------------------------------------ search
 
     @app.get("/api/search")
-    def search(q: str = Query("", max_length=500), exact: bool = False, group: int | None = None, children: bool = True,
+    def search(q: str = Query("", max_length=500), exact: bool = False, folder: str | None = None, children: bool = True,
                tag: str | None = None, type: str | None = None, date_from: str | None = None,
                date_to: str | None = None, limit: int = Query(50, ge=1, le=200), _u: str = Depends(user)):
         if not q.strip():
-            return list_documents(_u, 0, limit, group, children, tag, type, None, date_from, date_to)
-        found = svc.searcher.search(q, exact, group_ids_for(group, children), tag, type, date_from, date_to, limit)
+            return list_documents(_u, 0, limit, folder, children, tag, type, None, date_from, date_to)
+        found = svc.searcher.search(q, exact, folder or None, children, tag, type, date_from, date_to, limit)
         ids = found["ids"]
         rows = {r["id"]: r for r in db.conn.execute(
             f"SELECT * FROM documents WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)}
@@ -515,151 +442,8 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         for item in items:
             item["snippet"] = found["snippets"].get(item["id"]) or ""
             item["match"] = found["how"].get(item["id"], "")
-            if not item["snippet"]:
-                text = rows[item["id"]]["text"]
-                item["snippet_plain"] = " ".join(text[:240].split())
-        return {"items": items, "total": found["total"], "elapsed_ms": found["elapsed_ms"],
-                "semantic": found["semantic"]}
-
-    # ------------------------------------------------------------------------------------------ groups
-
-    @app.get("/api/groups")
-    def groups(_u: str = Depends(user)):
-        rows = db.conn.execute("SELECT id, parent_id, name, color, type_name, is_inbox, auto, centroid_n FROM groups").fetchall()
-        members: dict[int, set] = {r["id"]: set() for r in rows}
-        for r in db.conn.execute("SELECT dg.doc_id, dg.group_id FROM doc_groups dg JOIN documents d ON d.id = dg.doc_id "
-                                 "WHERE d.status != 'password_required'"):
-            members.setdefault(r["group_id"], set()).add(r["doc_id"])
-        children: dict[int | None, list[int]] = {}
-        for r in rows:
-            children.setdefault(r["parent_id"], []).append(r["id"])
-
-        def total(gid: int, seen=None) -> set:
-            seen = seen or set()
-            if gid in seen:
-                return set()
-            seen.add(gid)
-            out = set(members.get(gid, ()))
-            for child in children.get(gid, []):
-                out |= total(child, seen)
-            return out
-
-        key_counts = {r["group_id"]: r["n"] for r in db.conn.execute(
-            "SELECT group_id, COUNT(*) AS n FROM group_keys GROUP BY group_id")}
-        out = []
-        for r in rows:
-            out.append({"id": r["id"], "parent_id": r["parent_id"], "name": r["name"], "color": r["color"],
-                        "type": r["type_name"], "inbox": bool(r["is_inbox"]), "auto": bool(r["auto"]),
-                        "count": len(members.get(r["id"], ())), "total": len(total(r["id"])),
-                        "keys": key_counts.get(r["id"], 0)})
-        out.sort(key=lambda g: (g["inbox"], g["name"].lower()))
-        return {"items": out}
-
-    def get_group(group_id: int):
-        row = db.conn.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
-        if row is None:
-            raise _err(404, "Groupe introuvable.")
-        return row
-
-    @app.get("/api/groups/{group_id}")
-    def group(group_id: int, _u: str = Depends(user)):
-        row = get_group(group_id)
-        keys = db.conn.execute("SELECT key, value, label, source FROM group_keys WHERE group_id = ? ORDER BY key, label",
-                               (group_id,)).fetchall()
-        siblings_keys: dict[tuple, int] = {}
-        if row["parent_id"] is not None:
-            for r in db.conn.execute("SELECT key, value, COUNT(DISTINCT group_id) AS n FROM group_keys WHERE group_id IN "
-                                     "(SELECT id FROM groups WHERE parent_id = ?) GROUP BY key, value", (row["parent_id"],)):
-                siblings_keys[(r["key"], r["value"])] = r["n"]
-        blacklist = svc.rules.rules.blacklist
-        gindex = GroupIndex(db.conn)
-        return {"id": row["id"], "name": row["name"], "parent_id": row["parent_id"], "color": row["color"],
-                "path": gindex.path(group_id), "root_color": gindex.root(group_id)["color"], "type": row["type_name"],
-                "inbox": bool(row["is_inbox"]),
-                "keys": [{"key": k["key"], "value": k["value"], "label": k["label"], "source": k["source"],
-                          "ambiguous": siblings_keys.get((k["key"], k["value"]), 0) > 1 or
-                          (k["key"], k["value"]) in blacklist} for k in keys]}
-
-    @app.post("/api/groups")
-    def create_group(body: GroupBody, _u: str = Depends(user)):
-        if body.parent_id is not None:
-            get_group(body.parent_id)
-        gid = svc.grouper.create(body.name.strip(), body.parent_id, body.color)
-        return group(gid, _u)
-
-    @app.patch("/api/groups/{group_id}")
-    def patch_group(group_id: int, body: GroupPatch, _u: str = Depends(user)):
-        row = get_group(group_id)
-        with db.tx():
-            if body.name is not None:
-                db.conn.execute("UPDATE groups SET name = ?, auto = 0 WHERE id = ?", (body.name.strip(), group_id))
-            if body.color is not None:
-                db.conn.execute("UPDATE groups SET color = ? WHERE id = ?", (body.color, group_id))
-        if body.move:
-            if row["is_inbox"]:
-                raise _err(400, "Le groupe « À classer » reste à la racine.")
-            if body.parent_id is not None:
-                get_group(body.parent_id)
-            try:
-                svc.grouper.reparent(group_id, body.parent_id)
-            except ValueError as error:
-                raise _err(400, str(error)) from None
-        return group(group_id, _u)
-
-    @app.post("/api/groups/{group_id}/merge")
-    def merge_group(group_id: int, body: MergeBody, _u: str = Depends(user)):
-        source, target = get_group(group_id), get_group(body.into)
-        if source["is_inbox"] or target["is_inbox"]:
-            raise _err(400, "Le groupe « À classer » ne peut pas être fusionné.")
-        try:
-            svc.grouper.merge(group_id, body.into)
-        except ValueError as error:
-            raise _err(400, str(error)) from None
-        return group(body.into, _u)
-
-    @app.delete("/api/groups/{group_id}")
-    def delete_group(group_id: int, _u: str = Depends(user)):
-        get_group(group_id)
-        try:
-            svc.grouper.delete(group_id)
-        except ValueError as error:
-            raise _err(400, str(error)) from None
-        return {"ok": True}
-
-    @app.delete("/api/groups/{group_id}/keys")
-    def delete_group_key(group_id: int, key: str, value: str, _u: str = Depends(user)):
-        get_group(group_id)
-        with db.tx():
-            db.conn.execute("DELETE FROM group_keys WHERE group_id = ? AND key = ? AND value = ?", (group_id, key, value))
-        return group(group_id, _u)
-
-    @app.post("/api/groups/{group_id}/documents")
-    def assign(group_id: int, body: AssignBody, _u: str = Depends(user)):
-        get_group(group_id)
-        for doc_id in body.doc_ids:
-            get_doc(doc_id)
-            svc.grouper.move(doc_id, body.from_group, group_id)
-            with db.tx():
-                touch(doc_id)
-        return {"ok": True}
-
-    @app.delete("/api/groups/{group_id}/documents/{doc_id}")
-    def unassign(group_id: int, doc_id: int, _u: str = Depends(user)):
-        get_group(group_id)
-        get_doc(doc_id)
-        svc.grouper.remove(doc_id, group_id)
-        with db.tx():
-            touch(doc_id)
-        return {"ok": True}
-
-    @app.post("/api/groups/reclassify")
-    def reclassify(body: ReclassifyBody, _u: str = Depends(user)):
-        if body.group_id is not None:
-            get_group(body.group_id)
-        count = svc.grouper.reclassify(body.group_id, svc.processor.retype)
-        return {"ok": True, "documents": count}
-
-    # ------------------------------------------------------------------------------------------ tags & types
+        return {"items": items, "total": found["total"], "elapsed_ms": found["elapsed_ms"], "semantic": found["semantic"],
+                "corrections": found["corrections"]}
 
     @app.get("/api/tags")
     def tags(_u: str = Depends(user)):
@@ -669,8 +453,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
 
     @app.get("/api/types")
     def types(_u: str = Depends(user)):
-        return {"items": [{"name": t.name, "color": t.color, "subgroup_by": t.subgroup_by}
-                          for t in svc.rules.rules.types]}
+        return {"items": [{"name": t.name, "color": t.color} for t in svc.rules.rules.types]}
 
     # ------------------------------------------------------------------------------------------ queue & admin
 
@@ -682,26 +465,34 @@ def create_app(config: Config | None = None, services: Services | None = None, s
             "ELSE 2 END, id LIMIT 200").fetchall()
         locked_count = db.conn.execute("SELECT COUNT(*) FROM documents WHERE status = 'password_required'").fetchone()[0]
         return {"items": [dict(r) for r in rows], "current": svc.worker.current, "jobs": svc.worker.jobs(),
-                "locked": locked_count}
+                "locked": locked_count, "scan": scan_info()}
 
     @app.get("/api/admin/status")
     def admin_status(_u: str = Depends(user)):
         counts = {r["status"]: r["n"] for r in db.conn.execute("SELECT status, COUNT(*) AS n FROM documents GROUP BY status")}
-        size = db.conn.execute("SELECT COALESCE(SUM(size), 0) FROM documents").fetchone()[0]
+        size = db.conn.execute("SELECT COALESCE(SUM(size), 0) FROM documents WHERE status != 'missing'").fetchone()[0]
         db_size = sum(p.stat().st_size for p in config.data_dir.glob("papyrus.db*") if p.is_file())
         missing = db.conn.execute("SELECT COUNT(*) FROM documents WHERE status = 'done' AND embedding IS NULL").fetchone()[0]
         return {
             "documents": sum(counts.values()), "by_status": counts, "files_bytes": size, "db_bytes": db_size,
-            "groups": db.conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0],
             "tags": db.conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
+            "locations": db.conn.execute("SELECT COUNT(*) FROM locations").fetchone()[0],
+            "ignored": db.conn.execute("SELECT COUNT(*) FROM ignored").fetchone()[0],
+            "passwords": svc.vault.count(),
+            "scan": scan_info(),
             "worker": {"alive": bool(svc.worker.thread and svc.worker.thread.is_alive()), "current": svc.worker.current,
                        "jobs": svc.worker.jobs()},
             "model": {"status": svc.embedder.status(), "error": svc.embedder.error, "missing_embeddings": missing},
             "rules": {"source": svc.rules.rules.source, "types": len(svc.rules.rules.types)},
+            "search": svc.searcher.settings(),
             "memory_mb": _rss_mb(), "version": __version__, "build": config.build,
             "auth": {"disabled": auth.disabled, "accounts": len(svc.accounts.users) if svc.accounts else 0,
                      "problems": svc.accounts.problems if svc.accounts else []},
         }
+
+    @app.put("/api/admin/search-settings")
+    def put_search_settings(body: SearchSettingsBody, _u: str = Depends(user)):
+        return svc.searcher.save_settings(body.semantic_min, body.prefix, body.fuzzy)
 
     @app.post("/api/admin/reload-rules")
     def reload_rules(_u: str = Depends(user)):
@@ -727,11 +518,26 @@ def create_app(config: Config | None = None, services: Services | None = None, s
 
     @app.post("/api/admin/reprocess-all")
     def reprocess_all(_u: str = Depends(user)):
-        """Analyses every document again (text, OCR orientation, date, title, keywords, summary, groups). Manual
-        groups, tags typed by hand, typed titles and dates, and locked documents keep what they have."""
+        """Analyses every document again (text, OCR orientation, date, title, keywords, summary). Titles and dates typed
+        by hand, and tags typed by hand, are kept."""
         with db.tx():
             n = db.conn.execute("UPDATE documents SET status = 'pending', error = NULL WHERE status IN ('done', 'error')").rowcount
         svc.worker.wake()
+        return {"ok": True, "documents": n}
+
+    @app.post("/api/admin/purge-missing")
+    def purge_missing(_u: str = Depends(user)):
+        return {"ok": True, "documents": svc.library.purge_missing()}
+
+    @app.post("/api/admin/forget-passwords")
+    def forget_passwords(_u: str = Depends(user)):
+        """Deletes every saved password. Documents already unlocked keep their decrypted copy."""
+        return {"ok": True, "passwords": svc.vault.forget_all()}
+
+    @app.post("/api/admin/unignore-all")
+    def unignore_all(_u: str = Depends(user)):
+        n = svc.library.unignore_all()
+        svc.scanner.scan_now()
         return {"ok": True, "documents": n}
 
     @app.post("/api/admin/download-model")

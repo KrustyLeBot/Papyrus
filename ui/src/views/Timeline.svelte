@@ -1,54 +1,77 @@
 <script>
   import { route, navigate } from '../lib/router.js';
-  import { groups, uploadOpen } from '../lib/stores.js';
+  import { queue, toast, refreshQueue } from '../lib/stores.js';
+  import { get, post } from '../lib/api.js';
   import { formatNumber } from '../lib/format.js';
   import DocList from '../components/DocList.svelte';
   import Icon from '../components/Icon.svelte';
 
-  let total = null;
-  $: groupId = $route.query.group ? +$route.query.group : null;
+  let total = null, types = [], asking = false;
+  get('/types').then((r) => (types = r.items)).catch(() => {});
+  $: folder = $route.query.folder ?? '';
   $: year = $route.query.year || '';
-  $: roots = $groups.filter((g) => g.parent_id == null && !g.inbox);
-  $: inbox = $groups.find((g) => g.inbox);
-  $: years = [...new Set(Array.from({ length: 12 }, (_, i) => String(new Date().getFullYear() - i)))];
-  $: query = { group: groupId, date_from: year ? `${year}-01-01` : '', date_to: year ? `${year}-12-31` : '' };
+  $: type = $route.query.type || '';
+  $: years = Array.from({ length: 15 }, (_, i) => String(new Date().getFullYear() - i));
+  $: query = { folder, type, date_from: year ? `${year}-01-01` : '', date_to: year ? `${year}-12-31` : '' };
+  $: crumbs = folder && folder !== '.' ? folder.split('/').map((name, i, a) => ({ name, path: a.slice(0, i + 1).join('/') })) : [];
   function set(next) {
     const p = new URLSearchParams();
-    const g = 'group' in next ? next.group : groupId;
+    const f = 'folder' in next ? next.folder : folder;
     const y = 'year' in next ? next.year : year;
-    if (g) p.set('group', g);
+    const t = 'type' in next ? next.type : type;
+    if (f) p.set('folder', f);
     if (y) p.set('year', y);
+    if (t) p.set('type', t);
     navigate('/' + (p.toString() ? '?' + p : ''));
   }
-  $: allCount = $groups.filter((g) => g.parent_id == null).reduce((n, g) => n + g.total, 0);
+  async function scanNow() {
+    asking = true;
+    try { await post('/scan'); toast('Analyse des dossiers lancée.', 'success', 2500); setTimeout(refreshQueue, 800); } catch (e) { toast(e.message, 'error'); }
+    asking = false;
+  }
+  $: scan = $queue.scan;
 </script>
 
 <div class="page">
+  {#if crumbs.length || folder === '.'}
+    <nav class="crumbs" aria-label="Dossier">
+      <a href="/" on:click|preventDefault={() => set({ folder: '' })}>Tous les dossiers</a>
+      {#each crumbs as c, i}<span>/</span>{#if i < crumbs.length - 1}<a href="/?folder={encodeURIComponent(c.path)}" on:click|preventDefault={() => set({ folder: c.path })}>{c.name}</a>{:else}<span class="here">{c.name}</span>{/if}{/each}
+      {#if folder === '.'}<span>/</span><span class="here">À la racine</span>{/if}
+    </nav>
+  {/if}
   <header>
-    <h1>Chronologie</h1>
-    {#if total !== null}<span class="muted">{formatNumber(total)} document{total > 1 ? 's' : ''}, triés par date du document</span>{/if}
+    <h1>{crumbs.length ? crumbs[crumbs.length - 1].name : folder === '.' ? 'À la racine' : 'Chronologie'}</h1>
+    {#if total !== null}<span class="muted">{formatNumber(total)} document{total > 1 ? 's' : ''}, triés par date du document{crumbs.length ? ', sous-dossiers inclus' : ''}</span>{/if}
   </header>
   <div class="filters" role="group" aria-label="Filtres">
-    <button class="filter" class:on={!groupId} on:click={() => set({ group: null })}>Tous</button>
-    {#each roots as g (g.id)}
-      <button class="filter" class:on={groupId === g.id} on:click={() => set({ group: g.id })}><span class="dot" style="background:{g.color}"></span>{g.name}</button>
-    {/each}
-    {#if inbox && inbox.count > 0}<button class="filter" class:on={groupId === inbox.id} on:click={() => set({ group: inbox.id })}>À classer<span class="n">{inbox.count}</span></button>{/if}
-    <select class="filter year" aria-label="Année" value={year} on:change={(e) => set({ year: e.target.value })}>
+    <select class="filter" aria-label="Type de document" value={type} on:change={(e) => set({ type: e.target.value })}>
+      <option value="">Tous les types</option>
+      {#each types as t}<option value={t.name}>{t.name}</option>{/each}
+    </select>
+    <select class="filter" aria-label="Année" value={year} on:change={(e) => set({ year: e.target.value })}>
       <option value="">Toutes les années</option>
       {#each years as y}<option value={y}>{y}</option>{/each}
     </select>
+    {#if type || year}<button class="btn ghost small" on:click={() => set({ type: '', year: '' })}>Effacer les filtres</button>{/if}
   </div>
-  <DocList {query} on:total={(e) => (total = e.detail)}>
-    <button slot="empty" class="btn primary" on:click={() => uploadOpen.set(true)}><Icon name="upload" />Importer des documents</button>
+  <DocList {query} on:total={(e) => (total = e.detail)}
+    emptyText={folder || type || year ? 'Aucun document ne correspond à ces filtres.' : 'Aucun document pour l\'instant. Papyrus lit tes dossiers : les PDF et DOCX apparaissent ici après l\'analyse.'}>
+    <svelte:fragment slot="empty">
+      {#if !folder && !type && !year}
+        <p class="muted small">Dossier analysé : <span class="mono">{scan?.source || '/source'}</span>{#if scan?.warning}<br /><span class="warn">{scan.warning}</span>{/if}</p>
+        <button class="btn primary" on:click={scanNow} disabled={asking || scan?.running}><Icon name="refresh" />Analyser maintenant</button>
+      {/if}
+    </svelte:fragment>
   </DocList>
 </div>
 
 <style>
-  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 0; }
-  .filter { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: var(--r-control); border: 1px solid var(--border); color: var(--text-muted); font-size: 13px; background: transparent; transition: background var(--t); }
-  .filter:hover { background: var(--surface-2); }
-  .filter.on { background: var(--accent-soft); border-color: transparent; color: var(--text); }
-  .filter .n { color: var(--text-muted); font-size: 12px; }
-  .year { appearance: none; padding-right: 10px; }
+  .crumbs { display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }
+  .crumbs a:hover { color: var(--text); text-decoration: underline; }
+  .crumbs .here { color: var(--text); }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 0; align-items: center; }
+  .filter { height: 30px; padding: 0 10px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 13px; }
+  .small { font-size: 13px; text-align: center; }
+  .warn { color: var(--warning); }
 </style>

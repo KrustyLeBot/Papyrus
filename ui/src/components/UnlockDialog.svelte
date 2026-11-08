@@ -1,10 +1,10 @@
 <script>
   import { post } from '../lib/api.js';
-  import { unlockTarget, queue, toast, loadGroups, bumpDocs, refreshQueue } from '../lib/stores.js';
+  import { unlockTarget, queue, toast, loadFolders, bumpDocs, refreshQueue } from '../lib/stores.js';
   import Modal from './Modal.svelte';
   import Icon from './Icon.svelte';
 
-  let password = '', tryOthers = true, error = '', busy = false;
+  let password = '', tryOthers = true, remember = true, error = '', busy = false;
   $: doc = $unlockTarget;
   $: others = Math.max(0, $queue.locked - 1);
 
@@ -12,11 +12,11 @@
   async function submit() {
     busy = true; error = '';
     try {
-      const r = await post(`/documents/${doc.id}/unlock`, { password, try_others: tryOthers });
+      const r = await post(`/documents/${doc.id}/unlock`, { password, try_others: tryOthers, remember });
       const n = 1 + r.others.length;
       toast(n > 1 ? `${n} PDF déverrouillés, analyse en cours.` : r.status === 'duplicate' ? 'Ce document était déjà présent.' : 'PDF déverrouillé, analyse en cours.', 'success');
       password = ''; unlockTarget.set(null);
-      await refreshQueue(); await loadGroups(); bumpDocs();
+      await refreshQueue(); await loadFolders(); bumpDocs();
     } catch (e) { error = e.message; }
     busy = false;
   }
@@ -29,13 +29,14 @@
         <span class="ic"><Icon name="lock" size={18} /></span>
         <div><h2>Ce PDF est protégé</h2><div class="mono muted name">{doc.original_name || doc.name}</div></div>
       </div>
-      <p class="muted">Saisis le mot de passe d'ouverture. Papyrus gardera une copie déverrouillée ; le mot de passe n'est jamais enregistré.</p>
+      <p class="muted">Saisis le mot de passe d'ouverture. Ton fichier reste tel quel dans ton dossier ; Papyrus en garde une copie déverrouillée pour l'analyser.</p>
       <label class="field"><span class="label">Mot de passe</span>
         <input class="input" class:invalid={error} type="password" bind:value={password} autocomplete="off" data-autofocus required />
         {#if error}<span class="err" role="alert">{error} Tu peux réessayer.</span>{/if}</label>
       {#if others > 0}
         <label class="chk"><input type="checkbox" bind:checked={tryOthers} />{others > 1 ? `Essayer ce mot de passe sur les ${others} autres PDF en attente` : "Essayer ce mot de passe sur l'autre PDF en attente"}</label>
       {/if}
+      <label class="chk"><input type="checkbox" bind:checked={remember} />Retenir ce mot de passe (chiffré) pour les prochains PDF protégés</label>
       <div class="foot"><button type="button" class="btn" on:click={close}>Plus tard</button><button class="btn primary" disabled={busy || !password}>Déverrouiller</button></div>
     </form>
   </Modal>

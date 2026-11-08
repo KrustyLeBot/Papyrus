@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import threading
 import time
@@ -11,30 +12,70 @@ import numpy as np
 
 from .db import Database, blob_to_vec
 from .embed import Embedder
+from .text import fold
 
 RRF_K = 60
 SEMANTIC_TOP = 50
 # multilingual-e5-small: a related document scores 0.86-0.89 against a query, an unrelated one 0.77-0.84 (measured on
 # payslips, contracts, a diploma, invoices, a manual): below this, a result is noise, not a match
-SEMANTIC_FLOOR = 0.86
+SEMANTIC_FLOOR = 0.86  # the default of the adjustable "similarité minimale"
 _MARK_OPEN, _MARK_CLOSE = "\x02", "\x03"
 
 
-def fts_query(query: str) -> str | None:
-    """User syntax → FTS5: "exact phrase", prefix*, other words quoted (so FTS operators typed by mistake are
-    plain words); every term must match."""
-    parts = []
+def edit_distance(a: str, b: str, limit: int) -> int:
+    """Damerau-Levenshtein distance, given up (limit + 1) as soon as it cannot stay within `limit`."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev2, prev = None, list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if prev2 is not None and i > 1 and j > 1 and ca == b[j - 2] and a[i - 2] == cb:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        if min(cur) > limit:
+            return limit + 1
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
+def tokenize(query: str) -> list[tuple[str, list[str], bool]]:
+    """("phrase", words, False) for "quoted text", ("term", [word], explicit_prefix) for the others."""
+    items = []
     for m in re.finditer(r'"([^"]+)"|(\S+)', query):
         if m.group(1):
             words = re.findall(r"\w+", m.group(1))
             if words:
-                parts.append('"' + " ".join(words) + '"')
+                items.append(("phrase", words, False))
             continue
         token = m.group(2)
         prefix = token.endswith("*")
         for word in re.findall(r"\w+", token):
-            parts.append(f'"{word}"' + ("*" if prefix else ""))
-    return " ".join(parts) if parts else None
+            items.append(("term", [word], prefix))
+    return items
+
+
+def fts_query(query: str, prefix_last: bool = False, expand=None) -> str | None:
+    """User syntax → FTS5: "exact phrase", prefix*, every other word quoted (so FTS operators typed by mistake are
+    plain words); every term must match. `prefix_last` completes the last word as it is typed (« salai » finds
+    salaire); `expand(word)` may return spelling alternatives for a word the archive does not know."""
+    items = tokenize(query)
+    if not items:
+        return None
+    last_term = max((i for i, it in enumerate(items) if it[0] == "term"), default=-1)
+    parts = []
+    for i, (kind, words, explicit) in enumerate(items):
+        if kind == "phrase":
+            parts.append('"' + " ".join(words) + '"')
+            continue
+        word = words[0]
+        completing = explicit or (prefix_last and i == last_term)
+        alternatives = expand(word, completing) if expand and not explicit else [word]
+        head = f'"{word}"*' if completing else f'"{word}"'
+        others = [f'"{a}"' for a in alternatives if a != word]
+        parts.append("(" + " OR ".join([head, *others]) + ")" if others else head)
+    return " AND ".join(parts)
 
 
 def _snippet_html(raw: str) -> str:
@@ -78,18 +119,70 @@ class VectorIndex:
 
 
 class Searcher:
-    def __init__(self, db: Database, embedder: Embedder, vectors: VectorIndex):
+    def __init__(self, db: Database, embedder: Embedder, vectors: VectorIndex, defaults: dict | None = None):
         self.db = db
         self.embedder = embedder
         self.vectors = vectors
+        self.defaults = {"semantic_min": SEMANTIC_FLOOR, "prefix": True, "fuzzy": True, **(defaults or {})}
 
-    def _filter_ids(self, group_ids: list[int] | None, tag: str | None, type_name: str | None,
+    # ---------------------------------------------------------------- adjustable settings (Administration)
+
+    def settings(self) -> dict:
+        out = dict(self.defaults)
+        raw = self.db.setting("search")
+        if raw:
+            try:
+                saved = json.loads(raw)
+                out["semantic_min"] = min(0.95, max(0.5, float(saved.get("semantic_min", out["semantic_min"]))))
+                out["prefix"] = bool(saved.get("prefix", out["prefix"]))
+                out["fuzzy"] = bool(saved.get("fuzzy", out["fuzzy"]))
+            except (ValueError, TypeError, AttributeError):
+                pass
+        return out
+
+    def save_settings(self, semantic_min: float, prefix: bool, fuzzy: bool) -> dict:
+        with self.db.tx():
+            self.db.set_setting("search", json.dumps({"semantic_min": round(float(semantic_min), 3), "prefix": bool(prefix),
+                                                      "fuzzy": bool(fuzzy)}))
+        return self.settings()
+
+    # ---------------------------------------------------------------- spelling
+
+    def _known(self, word: str) -> bool:
+        return self.db.conn.execute("SELECT 1 FROM docs_vocab WHERE term = ? LIMIT 1", (word,)).fetchone() is not None
+
+    def _starts(self, word: str) -> bool:
+        if not word.isalnum():
+            return True
+        return self.db.conn.execute("SELECT 1 FROM docs_vocab WHERE term GLOB ? LIMIT 1", (word + "*",)).fetchone() is not None
+
+    def _near(self, word: str) -> list[str]:
+        """Words of the index within one typo (two for long words) of `word`, same first letter."""
+        folded = fold(word)
+        if len(folded) < 5 or not folded.isalnum():
+            return []
+        limit = 1 if len(folded) < 8 else 2
+        rows = self.db.conn.execute(
+            "SELECT DISTINCT term FROM docs_vocab WHERE term GLOB ? AND length(term) BETWEEN ? AND ?",
+            (folded[0] + "*", len(folded) - limit, len(folded) + limit)).fetchall()
+        scored = sorted((edit_distance(folded, r["term"], limit), r["term"]) for r in rows)
+        return [t for d, t in scored if d <= limit and t != folded][:6]
+
+    # ---------------------------------------------------------------- filters
+
+    def _filter_ids(self, folder: str | None, children: bool, tag: str | None, type_name: str | None,
                     date_from: str | None, date_to: str | None) -> set[int] | None:
-        clauses, params = ["status = 'done'"], []
-        if group_ids is not None:
-            marks = ",".join("?" * len(group_ids)) or "NULL"
-            clauses.append(f"id IN (SELECT doc_id FROM doc_groups WHERE group_id IN ({marks}))")
-            params += group_ids
+        clauses, params = [], []
+        if folder == ".":
+            clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = '')")
+        elif folder:
+            like = folder.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+            if children:
+                clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = ? OR folder LIKE ? ESCAPE '\\')")
+                params += [folder, like]
+            else:
+                clauses.append("id IN (SELECT doc_id FROM locations WHERE folder = ?)")
+                params.append(folder)
         if tag:
             clauses.append("id IN (SELECT dt.doc_id FROM doc_tags dt JOIN tags t ON t.id = dt.tag_id WHERE t.name = ?)")
             params.append(tag)
@@ -102,25 +195,37 @@ class Searcher:
         if date_to:
             clauses.append("doc_date <= ?")
             params.append(date_to)
-        if len(clauses) == 1:
+        if not clauses:
             return None
-        rows = self.db.conn.execute(f"SELECT id FROM documents WHERE {' AND '.join(clauses)}", params)
+        rows = self.db.conn.execute(f"SELECT id FROM documents WHERE status = 'done' AND {' AND '.join(clauses)}", params)
         return {r["id"] for r in rows}
 
-    def search(self, query: str, exact: bool = False, group_ids: list[int] | None = None, tag: str | None = None,
-               type_name: str | None = None, date_from: str | None = None, date_to: str | None = None,
-               limit: int = 50) -> dict:
+    def search(self, query: str, exact: bool = False, folder: str | None = None, children: bool = True,
+               tag: str | None = None, type_name: str | None = None, date_from: str | None = None,
+               date_to: str | None = None, limit: int = 50) -> dict:
         started = time.perf_counter()
-        allowed = self._filter_ids(group_ids, tag, type_name, date_from, date_to)
+        cfg = self.settings()
+        allowed = self._filter_ids(folder, children, tag, type_name, date_from, date_to)
         conn = self.db.conn
         text_rank: list[int] = []
         snippets: dict[int, str] = {}
-        match = fts_query(query)
+        corrections: dict[str, list[str]] = {}
+
+        def expand(word: str, completing: bool = False) -> list[str]:
+            folded = fold(word)
+            if not cfg["fuzzy"] or (self._starts(folded) if completing else self._known(folded)):
+                return [word]
+            near = self._near(word)
+            if near:
+                corrections[word] = near
+            return [word, *near]
+
+        match = fts_query(query, prefix_last=cfg["prefix"] and not exact, expand=None if exact else expand)
         if match:
             rows = conn.execute(
                 "SELECT rowid AS id, snippet(docs_fts, 1, ?, ?, '…', 18) AS snip, "
                 "snippet(docs_fts, 0, ?, ?, '…', 12) AS tsnip FROM docs_fts WHERE docs_fts MATCH ? "
-                "ORDER BY bm25(docs_fts, 10.0, 1.0, 5.0, 3.0) LIMIT 500",
+                "ORDER BY bm25(docs_fts, 10.0, 1.0, 5.0, 3.0, 2.0) LIMIT 500",
                 (_MARK_OPEN, _MARK_CLOSE, _MARK_OPEN, _MARK_CLOSE, match)).fetchall()
             for r in rows:
                 if allowed is not None and r["id"] not in allowed:
@@ -140,7 +245,7 @@ class Searcher:
                     sims = matrix @ qvec
                     order = np.argsort(-sims)
                     for i in order:
-                        if len(sem_rank) >= SEMANTIC_TOP or sims[i] < SEMANTIC_FLOOR:
+                        if len(sem_rank) >= SEMANTIC_TOP or sims[i] < cfg["semantic_min"]:
                             break
                         doc_id = int(ids[i])
                         if allowed is not None and doc_id not in allowed:
@@ -169,6 +274,7 @@ class Searcher:
             "how": {d: " + ".join(sorted(how[d], key=lambda s: s != "texte")) for d in ordered},
             "similarity": sem_scores,
             "semantic": semantic_used,
+            "corrections": corrections,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
         }
 

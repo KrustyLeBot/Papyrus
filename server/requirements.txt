@@ -12,3 +12,4 @@ tokenizers==0.23.3
 pikepdf==10.18.0
 Pillow==12.3.0
 pillow-heif==1.8.1
+cryptography==50.0.1

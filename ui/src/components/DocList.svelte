@@ -5,8 +5,7 @@
   import { docsVersion } from '../lib/stores.js';
   import DocRow from './DocRow.svelte';
   export let query = {};
-  export let from = null;
-  export let emptyText = 'Aucun document. Glisse des fichiers ici ou clique sur Importer.';
+  export let emptyText = 'Aucun document.';
   const dispatch = createEventDispatcher();
   const PAGE = 50;
 
@@ -54,7 +53,7 @@
   {#each months as m (m.key)}
     <section>
       <div class="month"><h2>{m.label}</h2><span class="muted">{plural(m.docs.length, 'document', 'documents')}</span></div>
-      {#each m.docs as d (d.id)}<DocRow doc={d} {from} />{/each}
+      {#each m.docs as d (d.id)}<DocRow doc={d} />{/each}
     </section>
   {/each}
   <div use:observe bind:this={sentinel} style="height:1px"></div>

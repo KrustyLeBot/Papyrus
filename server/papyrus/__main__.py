@@ -1,4 +1,4 @@
-"""Command line: `papyrus` (serve), `papyrus adduser <name>`, `papyrus backup`, `papyrus export`, `papyrus reindex`,
+"""Command line: `papyrus` (serve), `papyrus adduser <name>`, `papyrus backup`, `papyrus export`, `papyrus scan`, `papyrus reindex`,
 `papyrus check`."""
 from __future__ import annotations
 
@@ -31,6 +31,8 @@ def serve() -> int:
             return 1
     else:
         print("papyrus: AUTH_DISABLED=true, anyone who reaches the port is logged in. Only use it behind an access proxy.", flush=True)
+    if not config.source_dir.is_dir():
+        print(f"papyrus: the source folder {config.source_dir} is not there: mount it (read-only is enough) on /source.", flush=True)
     app = create_app(config)
     uvicorn.run(app, host="0.0.0.0", port=config.port, log_level="warning", proxy_headers=False, access_log=False,
                 timeout_keep_alive=30)
@@ -98,21 +100,32 @@ def backup() -> int:
 def export() -> int:
     svc = _services()
     c = svc.db.conn
-    groups = [dict(r) for r in c.execute("SELECT id, parent_id, name, color, type_name, is_inbox FROM groups")]
     out = {
-        "format": "papyrus-export-1",
-        "groups": groups,
-        "group_keys": [dict(r) for r in c.execute("SELECT group_id, key, value, label, source FROM group_keys")],
+        "format": "papyrus-export-2",
         "documents": [dict(r) for r in c.execute(
-            "SELECT id, uuid, title, original_name, ext, size, sha256, path, status, doc_date, date_source, types, locked, "
-            "pages, ocr, unlocked_at, created_at FROM documents")],
-        "assignments": [dict(r) for r in c.execute("SELECT doc_id, group_id, source FROM doc_groups")],
+            "SELECT id, uuid, title, title_manual, original_name, ext, size, sha256, status, doc_date, date_source, types, "
+            "summary, pages, ocr, unlocked_at, created_at FROM documents")],
+        "locations": [dict(r) for r in c.execute("SELECT doc_id, path, folder FROM locations")],
         "tags": [dict(r) for r in c.execute("SELECT id, name FROM tags")],
         "doc_tags": [dict(r) for r in c.execute("SELECT doc_id, tag_id, source FROM doc_tags")],
         "keys": [dict(r) for r in c.execute("SELECT doc_id, key, value, label FROM doc_keys")],
+        "ignored": [dict(r) for r in c.execute("SELECT sha256, title, path FROM ignored")],
     }
     json.dump(out, sys.stdout, ensure_ascii=False, indent=1)
     sys.stdout.write("\n")
+    svc.close()
+    return 0
+
+
+def scan() -> int:
+    """One scan of the source folder, then the analysis of what it found (no server)."""
+    svc = _services()
+    result = svc.scanner.scan()
+    print(f"Analyse du dossier : {result}")
+    while svc.worker.run_one():
+        pass
+    if svc.scanner.state.get("warning"):
+        print(svc.scanner.state["warning"], file=sys.stderr)
     svc.close()
     return 0
 
@@ -157,11 +170,13 @@ def main() -> int:
         return backup()
     if command == "export":
         return export()
+    if command == "scan":
+        return scan()
     if command == "reindex":
         return reindex()
     if command == "check":
         return check()
-    print(f"papyrus: unknown command {command!r} (serve, adduser, backup, export, reindex, check)", file=sys.stderr)
+    print(f"papyrus: unknown command {command!r} (serve, adduser, backup, export, scan, reindex, check)", file=sys.stderr)
     return 2
 
 

@@ -17,10 +17,10 @@ ARG BUILD=dev
 ARG BAKE_MODEL=0
 LABEL org.opencontainers.image.source="https://github.com/KrustyLeBot/Papyrus" \
       org.opencontainers.image.title="papyrus" \
-      org.opencontainers.image.description="Self-hosted personal document archive: OCR, full-text and semantic search, automatic grouping"
+      org.opencontainers.image.description="Crawler and search engine for the PDF and DOCX files of a NAS: OCR, full-text and semantic search"
 # MALLOC_ARENA_MAX: two glibc arenas instead of one per thread keep the idle footprint small.
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MALLOC_ARENA_MAX=2 \
-    PAPYRUS_DATA=/data PAPYRUS_CONF=/conf PAPYRUS_STATIC=/app/static PAPYRUS_PORT=8080 PAPYRUS_BUILD=$BUILD \
+    PAPYRUS_DATA=/data PAPYRUS_CONF=/conf PAPYRUS_SOURCE=/source PAPYRUS_STATIC=/app/static PAPYRUS_PORT=8080 PAPYRUS_BUILD=$BUILD \
     TZ=Europe/Paris
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,7 +38,7 @@ RUN if [ "$BAKE_MODEL" = "1" ]; then \
 RUN python -m compileall -q /app /usr/local/lib/python3.12 \
  && chmod +x /usr/local/bin/docker-entrypoint.sh \
  && useradd --uid 1000 --user-group --no-create-home --shell /usr/sbin/nologin papyrus \
- && mkdir -p /data /conf && chown papyrus:papyrus /data
+ && mkdir -p /data /conf /source && chown papyrus:papyrus /data
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4)"]

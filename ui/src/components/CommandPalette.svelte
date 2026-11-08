@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte';
-  import { paletteOpen, uploadOpen, theme, groups, toast, bumpDocs, loadGroups, queue, groupPath } from '../lib/stores.js';
+  import { paletteOpen, theme, folders, toast, queue, refreshQueue } from '../lib/stores.js';
   import { navigate } from '../lib/router.js';
   import { get, post, qs } from '../lib/api.js';
   import { formatDate } from '../lib/format.js';
@@ -10,22 +10,21 @@
   const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
   $: actions = [
-    { label: 'Importer des documents', hint: 'u', run: () => uploadOpen.set(true) },
+    { label: 'Analyser les dossiers maintenant', run: async () => { try { await post('/scan'); toast('Analyse des dossiers lancée.', 'success', 2500); setTimeout(refreshQueue, 800); } catch (e) { toast(e.message, 'error'); } } },
     { label: 'Aller à la chronologie', hint: 'g t', run: () => navigate('/') },
-    { label: 'Aller aux groupes', hint: 'g g', run: () => navigate('/groups') },
     ...($queue.locked ? [{ label: `Déverrouiller les PDF protégés (${$queue.locked})`, run: () => navigate('/unlock') }] : []),
     { label: 'Ouvrir l\'administration', run: () => navigate('/admin') },
-    { label: 'Reclasser automatiquement tous les documents', run: async () => { try { const r = await post('/groups/reclassify', { group_id: null }); toast(`${r.documents} document(s) reclassé(s).`, 'success'); await loadGroups(); bumpDocs(); } catch (e) { toast(e.message, 'error'); } } },
+    { label: 'Réanalyser tous les documents', run: async () => { try { const r = await post('/admin/reprocess-all'); toast(`${r.documents} document(s) remis en file d'analyse.`, 'success'); } catch (e) { toast(e.message, 'error'); } } },
     { label: 'Recharger les règles de classement', run: async () => { try { const r = await post('/admin/reload-rules'); toast(`Règles rechargées (${r.types} types).`, 'success'); } catch (e) { toast(e.message, 'error'); } } },
     { label: $theme === 'dark' ? 'Passer au thème clair' : 'Passer au thème sombre', run: () => theme.set($theme === 'dark' ? 'light' : 'dark') },
   ];
   $: needle = norm(q.trim());
   $: shownActions = needle ? actions.filter((a) => norm(a.label).includes(needle)) : actions;
-  $: shownGroups = needle ? $groups.filter((g) => !g.inbox && norm(groupPath($groups, g.id)).includes(needle)).slice(0, 5) : [];
+  $: shownFolders = needle ? $folders.filter((f) => f.path && norm(f.path).includes(needle)).slice(0, 5) : [];
   $: entries = [
     ...shownActions.map((a) => ({ section: 'Actions', label: a.label, hint: a.hint, run: a.run })),
-    ...shownGroups.map((g) => ({ section: 'Groupes', label: groupPath($groups, g.id), hint: String(g.total), run: () => navigate(`/groups/${g.id}`) })),
-    ...docs.map((d) => ({ section: 'Documents', label: d.title, hint: `${d.groups[0]?.path || ''} · ${formatDate(d.date)}`, run: () => navigate(`/documents/${d.id}`) })),
+    ...shownFolders.map((f) => ({ section: 'Dossiers', label: f.path, hint: String(f.count), run: () => navigate(`/?folder=${encodeURIComponent(f.path)}`) })),
+    ...docs.map((d) => ({ section: 'Documents', label: d.title, hint: `${d.folder || 'racine'} · ${formatDate(d.date)}`, run: () => navigate(`/documents/${d.id}`) })),
     ...(needle.length > 1 ? [{ section: 'Recherche', label: `Rechercher « ${q.trim()} » dans tous les documents`, run: () => navigate(`/?q=${encodeURIComponent(q.trim())}`) }] : []),
   ];
   $: if (index >= entries.length) index = Math.max(0, entries.length - 1);
@@ -52,7 +51,7 @@
 {#if $paletteOpen}
   <Modal label="Palette de commandes" width={640} on:close={close}>
     <div class="pal">
-      <input class="in" bind:value={q} on:keydown={key} placeholder="Chercher un document, un groupe, une action…" aria-label="Commande ou recherche" data-autofocus autocomplete="off" />
+      <input class="in" bind:value={q} on:keydown={key} placeholder="Chercher un document, un dossier, une action…" aria-label="Commande ou recherche" data-autofocus autocomplete="off" />
       <div class="list" bind:this={listEl} role="listbox">
         {#each entries as e, i}
           {#if i === 0 || entries[i - 1].section !== e.section}<div class="sec">{e.section}</div>{/if}

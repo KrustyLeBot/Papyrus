@@ -1,6 +1,7 @@
 <script>
   import { route, navigate } from '../lib/router.js';
-  import { queue, uploadOpen, drawerOpen, paletteOpen } from '../lib/stores.js';
+  import { queue, drawerOpen, toast, refreshQueue } from '../lib/stores.js';
+  import { post } from '../lib/api.js';
   import Icon from './Icon.svelte';
 
   let q = '';
@@ -21,8 +22,17 @@
   function typed() { clearTimeout(timer); timer = setTimeout(() => go(q.trim()), 220); }
   function submit(e) { e.preventDefault(); go(q.trim()); }
   function clear() { q = ''; go(''); input?.focus(); }
-  $: busy = $queue.items.filter((i) => i.status !== 'error').length + ($queue.current && !$queue.items.some((i) => i.id === $queue.current.id) ? 1 : 0);
+
+  $: scan = $queue.scan;
+  $: waiting = $queue.items.filter((i) => i.status !== 'error').length + ($queue.current && !$queue.items.some((i) => i.id === $queue.current.id) ? 1 : 0);
   $: step = $queue.current?.step || '';
+  $: status = scan?.running ? 'Analyse des dossiers…' : waiting > 0 ? `Traitement de ${waiting} document${waiting > 1 ? 's' : ''}` : '';
+  let asking = false;
+  async function scanNow() {
+    asking = true;
+    try { await post('/scan'); toast('Analyse des dossiers lancée.', 'success', 2500); setTimeout(refreshQueue, 800); } catch (e) { toast(e.message, 'error'); }
+    asking = false;
+  }
 </script>
 
 <header class="top">
@@ -33,13 +43,13 @@
     {#if q}<button type="button" class="clr" aria-label="Effacer la recherche" on:click={clear}><Icon name="x" /></button>{:else}<span class="kbd hide-sm">/</span>{/if}
   </form>
   <div class="right">
-    {#if busy > 0}
+    {#if status}
       <a class="proc" href="/admin" on:click|preventDefault={() => navigate('/admin')} title={step}>
         <span class="bar"><span></span></span>
-        <span>Traitement de {busy} document{busy > 1 ? 's' : ''}</span>
+        <span class="txt">{status}</span>
       </a>
     {/if}
-    <button class="btn primary import" on:click={() => uploadOpen.set(true)}><Icon name="upload" />Importer</button>
+    <button class="btn" on:click={scanNow} disabled={asking || scan?.running} title="Chercher les nouveaux fichiers dans tes dossiers (automatique toutes les {scan?.interval || 60} s)"><Icon name="refresh" /><span class="lbl">Analyser</span></button>
   </div>
 </header>
 
@@ -56,5 +66,5 @@
   .clr { border: 0; background: transparent; color: var(--text-muted); width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; padding: 0; }
   .clr:hover { background: var(--border); color: var(--text); }
   .menu { display: none; }
-  @media (max-width: 900px) { .menu { display: inline-flex; } .top { padding: 8px 12px; } .hide-sm, .proc span:last-child, .import { display: none; } }
+  @media (max-width: 900px) { .menu { display: inline-flex; } .top { padding: 8px 12px; } .hide-sm, .txt, .lbl { display: none; } }
 </style>

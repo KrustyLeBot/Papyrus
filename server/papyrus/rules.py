@@ -9,7 +9,6 @@ from pathlib import Path
 
 import yaml
 
-from .identifiers import KEY_NAMES
 from .text import fold
 
 DEFAULT_PATH = Path(__file__).resolve().parent / "default_rules.yaml"
@@ -105,10 +104,7 @@ def parse(text: str, source: str) -> Rules:
         keywords = item.get("keywords") or {}
         if not isinstance(keywords, dict) or not keywords:
             raise RulesError(f"{source}: « {item['name']} » n'a pas de mots-clés")
-        subgroup_by = list(item.get("subgroup_by") or [])
-        unknown = [k for k in subgroup_by if k not in KEY_NAMES]
-        if unknown:
-            raise RulesError(f"{source}: « {item['name']} » : clé inconnue {unknown} (connues : {', '.join(KEY_NAMES)})")
+        subgroup_by = list(item.get("subgroup_by") or [])  # read for old files, no longer used: folders replaced groups
         rule = TypeRule(
             name=str(item["name"]),
             keywords={str(k): float(v) for k, v in keywords.items()},

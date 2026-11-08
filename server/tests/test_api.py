@@ -9,7 +9,7 @@ from papyrus.app import create_app
 from papyrus.services import Services
 
 from . import docgen
-from .conftest import drain, make_config, upload
+from .conftest import drain, make_config, place, upload
 
 
 @pytest.fixture
@@ -34,9 +34,9 @@ def test_login_page_flow_cookies_and_csrf(secured):
     assert "httponly" in cookie and "samesite=lax" in cookie
     assert c.get("/api/auth/me").json()["user"] == "jerome"
     # a change without the CSRF header is refused, with it accepted
-    assert c.post("/api/groups", json={"name": "X"}).status_code == 403
+    assert c.post("/api/admin/reload-rules").status_code == 403
     csrf = c.cookies.get("papyrus_csrf")
-    assert c.post("/api/groups", json={"name": "X"}, headers={"X-CSRF-Token": csrf}).status_code == 200
+    assert c.post("/api/admin/reload-rules", headers={"X-CSRF-Token": csrf}).status_code == 200
     assert c.post("/api/auth/logout", headers={"X-CSRF-Token": csrf}).status_code == 200
     assert c.get("/api/documents").status_code == 401
 
@@ -86,33 +86,6 @@ def test_password_change_closes_sessions(secured):
     assert c.get("/api/auth/me").status_code == 401
 
 
-def test_upload_limits_and_unknown_formats(client, cfg, tmp_path, no_model):
-    cfg.max_upload_mb = 1
-    big = tmp_path / "big.txt"
-    big.write_bytes(b"a" * (1024 * 1024 + 10))
-    assert upload(client, big)["status"] == "rejected"
-    exe = tmp_path / "x.bin"
-    exe.write_bytes(b"MZ\x90\x00" + b"\x00" * 100)
-    assert upload(client, exe)["status"] == "rejected"
-    txt = tmp_path / "note.txt"
-    txt.write_text("Facture n° 12\nTotal TTC 120,00", encoding="utf-8")
-    assert upload(client, txt)["status"] == "queued"
-    assert upload(client, txt)["status"] == "duplicate"
-
-
-def test_files_are_stored_with_opaque_names_and_never_modified(client, cfg, tmp_path, no_model):
-    src = docgen.pdf(tmp_path / "Mon relevé très privé.pdf", ["Relevé de compte", "solde"])
-    original = src.read_bytes()
-    r = upload(client, src)
-    stored = next(cfg.files_dir.rglob("*.pdf"))
-    assert stored.read_bytes() == original
-    assert "relev" not in stored.name.lower() and stored.parent.parent.name.isdigit()
-    drain(client.app.state.services)
-    doc = client.get(f"/api/documents/{r['id']}").json()
-    assert doc["original_name"] == "Mon relevé très privé.pdf"
-    assert client.get(f"/api/documents/{r['id']}/file").content == original
-
-
 def test_search_accents_prefix_phrase_and_filters(client, services, tmp_path, no_model):
     a = tmp_path / "a.txt"
     a.write_text("Facture d'électricité du mois de mars\nTotal TTC 120,00", encoding="utf-8")
@@ -156,16 +129,6 @@ def test_tags_manual_never_removed_by_automatic(client, services, tmp_path, no_m
     assert "à garder" in names and "2026" in names and "facture" in names
 
 
-def test_delete_document_removes_files_and_index(client, services, cfg, tmp_path, no_model):
-    f = tmp_path / "z.txt"
-    f.write_text("Facture jetable", encoding="utf-8")
-    doc_id = upload(client, f)["id"]
-    drain(services)
-    assert client.delete(f"/api/documents/{doc_id}").status_code == 200
-    assert not list(cfg.files_dir.rglob("*.txt")) and not list(cfg.thumbs_dir.glob("*"))
-    assert client.get("/api/search", params={"q": "jetable"}).json()["items"] == []
-
-
 def test_degraded_mode_reports_absent_model(client, no_model):
     s = client.get("/api/admin/status").json()
     assert s["model"]["status"] == "absent"
@@ -202,7 +165,6 @@ def test_content_tags_from_keywords_without_any_type(client, services, tmp_path,
     doc = client.get(f"/api/documents/{doc_id}").json()
     names = {t["name"] for t in doc["tags"]}
     assert {"notice", "garantie"} <= names
-    assert [g["path"] for g in doc["groups"]] == ["À classer"]  # tags do not classify
     assert [d["id"] for d in client.get("/api/search", params={"q": "notice", "tag": "notice"}).json()["items"]] == [doc_id]
 
 
@@ -213,7 +175,7 @@ def test_diploma_is_typed_and_tagged(client, services, tmp_path, no_model):
     doc = client.get(f"/api/documents/{upload(client, f)['id']}").json()
     drain(services)
     doc = client.get(f"/api/documents/{doc['id']}").json()
-    assert [g["path"] for g in doc["groups"]] == ["Études"]
+    assert doc["types"] == ["Études"]
     assert {"diplôme", "2015"} <= {t["name"] for t in doc["tags"]}
 
 
@@ -231,14 +193,79 @@ def test_reprocess_all_keeps_what_was_set_by_hand(client, services, tmp_path, no
     assert doc["status"] == "done" and doc["date"] == "2020-01-02" and "perso" in {t["name"] for t in doc["tags"]}
 
 
-def test_reprocess_keeps_a_locked_documents_groups(client, services, tmp_path, no_model):
-    f = tmp_path / "paie.txt"
-    f.write_text("BULLETIN DE SALAIRE\nSalaire brut 4 000\nCotisations 880\nNet à payer 3 120\nSIRET : 732 829 320 00074\nATELIER MOREL SAS", encoding="utf-8")
+def test_a_document_is_read_from_the_source_folder_and_never_modified(client, services, cfg, tmp_path, no_model):
+    src = docgen.pdf(tmp_path / "Mon relevé très privé.pdf", ["Relevé de compte", "solde"])
+    original = src.read_bytes()
+    r = upload(client, src, name="Banque/2026/Mon relevé très privé.pdf")
+    stored = cfg.source_dir / "Banque" / "2026" / "Mon relevé très privé.pdf"
+    assert stored.read_bytes() == original
+    doc = client.get(f"/api/documents/{r['id']}").json()
+    assert doc["path"] == "Banque/2026/Mon relevé très privé.pdf" and doc["folder"] == "Banque/2026"
+    assert client.get(f"/api/documents/{r['id']}/file").content == original  # served from where it is
+    assert not list(cfg.data_dir.glob("files")) and not list(cfg.data_dir.glob("**/Mon*"))  # no copy kept
+
+
+def test_forget_removes_the_analysis_not_the_file_and_it_stays_out(client, services, cfg, tmp_path, no_model):
+    f = tmp_path / "z.txt"
+    f.write_text("Facture jetable", encoding="utf-8")
     doc_id = upload(client, f)["id"]
-    drain(services)
-    before = [g["path"] for g in client.get(f"/api/documents/{doc_id}").json()["groups"]]
-    assert before and before != ["À classer"]
-    client.patch(f"/api/documents/{doc_id}", json={"locked": True})
-    client.post("/api/admin/reprocess-all")
-    drain(services)
-    assert [g["path"] for g in client.get(f"/api/documents/{doc_id}").json()["groups"]] == before
+    assert client.delete(f"/api/documents/{doc_id}").status_code == 200
+    assert (cfg.source_dir / "z.txt").exists()  # the file is untouched
+    assert not list(cfg.thumbs_dir.glob("*"))
+    assert client.get("/api/search", params={"q": "jetable"}).json()["items"] == []
+    services.scanner.scan()  # a later scan does not bring it back
+    assert client.get("/api/documents").json()["items"] == []
+    assert client.get("/api/admin/status").json()["ignored"] == 1
+    assert client.post("/api/admin/unignore-all").json()["documents"] == 1  # bring it back on purpose
+    services.scanner.scan()
+    assert client.get("/api/documents").json()["total"] == 1
+
+
+def test_search_completes_the_last_word_and_forgives_typos(client, services, tmp_path, no_model):
+    f = tmp_path / "paie.txt"
+    f.write_text("Bulletin de salaire de septembre\nSalaire brut 4 000\nCotisations salariales", encoding="utf-8")
+    other = tmp_path / "autre.txt"
+    other.write_text("Facture d'électricité du mois de mars", encoding="utf-8")
+    upload(client, f)
+    upload(client, other)
+    found = lambda q, **kw: [d["original_name"] for d in client.get("/api/search", params={"q": q, **kw}).json()["items"]]
+    assert found("salai") == ["paie.txt"]                    # typing: the last word is completed
+    assert found("bulletin salai") == ["paie.txt"]
+    assert found("salare") == ["paie.txt"]                   # one typo
+    assert found("electricte") == ["autre.txt"]              # accents and a typo
+    assert found("salai", exact="1") == []                   # « exact » means exact
+    data = client.get("/api/search", params={"q": "salare"}).json()
+    assert data["corrections"] == {"salare": ["salaire", "salaires"][:len(data["corrections"]["salare"])]} or "salaire" in data["corrections"]["salare"]
+    # the settings can switch both off
+    client.put("/api/admin/search-settings", json={"semantic_min": 0.86, "prefix": False, "fuzzy": False})
+    assert found("salai") == [] and found("salare") == []
+    assert found("salaire") == ["paie.txt"]
+    assert client.get("/api/admin/status").json()["search"] == {"semantic_min": 0.86, "prefix": False, "fuzzy": False}
+
+
+def test_search_settings_are_validated(client):
+    assert client.put("/api/admin/search-settings", json={"semantic_min": 0.2, "prefix": True, "fuzzy": True}).status_code == 422
+    r = client.put("/api/admin/search-settings", json={"semantic_min": 0.9, "prefix": True, "fuzzy": True})
+    assert r.status_code == 200 and r.json()["semantic_min"] == 0.9
+
+
+def test_folder_filter_and_listing(client, services, tmp_path, no_model):
+    a = tmp_path / "a.txt"
+    a.write_text("Facture A n° 1 total TTC", encoding="utf-8")
+    b = tmp_path / "b.txt"
+    b.write_text("Facture B n° 2 total TTC", encoding="utf-8")
+    c = tmp_path / "c.txt"
+    c.write_text("Facture C n° 3 total TTC", encoding="utf-8")
+    upload(client, a, name="Impots/2025/a.txt")
+    upload(client, b, name="Impots/2026/b.txt")
+    upload(client, c, name="Bordel/c.txt")
+    folders = {f["path"]: f["count"] for f in client.get("/api/folders").json()["items"]}
+    assert folders == {"Impots/2025": 1, "Impots/2026": 1, "Bordel": 1}
+    names = lambda **kw: sorted(d["original_name"] for d in client.get("/api/documents", params=kw).json()["items"])
+    assert names(folder="Impots") == ["a.txt", "b.txt"]
+    assert names(folder="Impots", children="0") == []
+    assert names(folder="Impots/2026") == ["b.txt"]
+    assert names(folder="Imp") == []  # a folder name is not a prefix match
+    hits = client.get("/api/search", params={"q": "facture", "folder": "Impots"}).json()["items"]
+    assert sorted(d["original_name"] for d in hits) == ["a.txt", "b.txt"]
+    assert [d["original_name"] for d in client.get("/api/search", params={"q": "bordel"}).json()["items"]] == ["c.txt"]  # folder names are searchable

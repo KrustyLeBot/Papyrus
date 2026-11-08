@@ -1,14 +1,13 @@
 import { writable, get } from 'svelte/store';
 
-// Routes: / (timeline) · /search · /groups[/:id] · /documents/:id · /unlock · /admin
+// Routes: / (timeline: ?folder= ?q= ?year= ?type=) · /documents/:id · /unlock · /admin
 function parse(url) {
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const query = Object.fromEntries(url.searchParams);
   let m;
   if (path === '/') return { name: 'timeline', params: {}, query };
   if (path === '/search') return { name: 'timeline', params: {}, query }; // the search bar filters the timeline
-  if (path === '/groups') return { name: 'groups', params: {}, query };
-  if ((m = path.match(/^\/groups\/(\d+)$/))) return { name: 'groups', params: { id: +m[1] }, query };
+  if (path === '/groups' || path.startsWith('/groups/')) return { name: 'timeline', params: {}, query: {} };
   if ((m = path.match(/^\/documents\/(\d+)$/))) return { name: 'document', params: { id: +m[1] }, query };
   if (path === '/unlock') return { name: 'unlock', params: {}, query };
   if (path === '/admin') return { name: 'admin', params: {}, query };

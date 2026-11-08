@@ -1,25 +1,29 @@
-"""Processing of one document (§5): text, date, title, types, keys, embedding, groups and tags, thumbnail, index.
+"""Analysis of one document (§5): text, date, title, types, identifiers, embedding, tags, summary, thumbnail, index.
 Plus the background worker that runs it, one document at a time, from the queue kept in the database."""
 from __future__ import annotations
 
 import datetime as dt
 import json
+import posixpath
 import threading
 import time
 import traceback
 from pathlib import Path
 
-from . import dates, extract, identifiers, summary as summarizer, thumbs
+from . import dates, extract, identifiers, pdfcrypt, summary as summarizer, thumbs
 from .config import Config
-from .db import Database, blob_to_vec, vec_to_blob
+from .db import Database, vec_to_blob
 from .embed import Embedder
-from .grouping import Grouper, now
 from .rules import RulesStore
 from .text import fold
 
 
+def now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
 def index_document(db: Database, doc_id: int) -> None:
-    """(Re)writes the document's row of the full-text index: title, text, file name, tags."""
+    """(Re)writes the document's row of the full-text index: title, text, file name, tags, folders."""
     conn = db.conn
     row = conn.execute("SELECT title, text, original_name FROM documents WHERE id = ?", (doc_id,)).fetchone()
     conn.execute("DELETE FROM docs_fts WHERE rowid = ?", (doc_id,))
@@ -27,8 +31,9 @@ def index_document(db: Database, doc_id: int) -> None:
         return
     tags = " ".join(r["name"] for r in conn.execute(
         "SELECT t.name FROM doc_tags dt JOIN tags t ON t.id = dt.tag_id WHERE dt.doc_id = ?", (doc_id,)))
-    conn.execute("INSERT INTO docs_fts(rowid, title, body, filename, tags) VALUES (?, ?, ?, ?, ?)",
-                 (doc_id, row["title"], row["text"], row["original_name"], tags))
+    folders = " ".join(r["folder"] for r in conn.execute("SELECT DISTINCT folder FROM locations WHERE doc_id = ?", (doc_id,)))
+    conn.execute("INSERT INTO docs_fts(rowid, title, body, filename, tags, folder) VALUES (?, ?, ?, ?, ?, ?)",
+                 (doc_id, row["title"], row["text"], row["original_name"], tags, folders))
 
 
 def tag_id(db: Database, name: str) -> int:
@@ -53,17 +58,34 @@ def prune_tags(db: Database) -> None:
 
 
 class Processor:
-    def __init__(self, config: Config, db: Database, rules: RulesStore, embedder: Embedder, grouper: Grouper):
+    def __init__(self, config: Config, db: Database, rules: RulesStore, embedder: Embedder, vault=None):
         self.config = config
         self.db = db
         self.rules = rules
         self.embedder = embedder
-        self.grouper = grouper
+        self.vault = vault
 
-    def path_of(self, row) -> Path:
-        return self.config.data_dir / row["path"]
+    # ---------------------------------------------------------------- where the bytes are
 
-    # ---------------------------------------------------------------- steps that the reclassification reuses
+    def source_path(self, doc_id: int) -> Path | None:
+        """The first existing location of a document, inside the source folder (never outside it)."""
+        root = self.config.source_dir
+        for r in self.db.conn.execute("SELECT path FROM locations WHERE doc_id = ? ORDER BY id", (doc_id,)):
+            if ".." in r["path"].split("/"):
+                continue
+            path = root / r["path"]
+            if path.is_file():
+                return path
+        return None
+
+    def path_of(self, row) -> Path | None:
+        """The file to read: the decrypted copy of a protected PDF, else the document where the user keeps it."""
+        if row["work_path"]:
+            path = self.config.data_dir / row["work_path"]
+            return path if path.is_file() else None
+        return self.source_path(row["id"])
+
+    # ---------------------------------------------------------------- steps that the reanalysis reuses
 
     def retype(self, doc_id: int) -> list[str]:
         row = self.db.conn.execute("SELECT title, text, original_name FROM documents WHERE id = ?", (doc_id,)).fetchone()
@@ -88,14 +110,14 @@ class Processor:
             for r in conn.execute(f"SELECT term, doc FROM docs_vocab WHERE col = 'body' AND term IN ({marks})", chunk):
                 freq[r["term"]] = r["doc"]
         # the document itself is in the index when it is analysed again: it is not "another document" holding the word
-        own = conn.execute("SELECT 1 FROM docs_fts WHERE rowid = ?", (doc_id,)).fetchone()
-        if own:
+        if conn.execute("SELECT 1 FROM docs_fts WHERE rowid = ?", (doc_id,)).fetchone():
             freq = {t: max(0, n - 1) for t, n in freq.items()}
         scores = summarizer.term_scores(counts, freq, n_docs)
         return (summarizer.keywords(text, title, counts, forms, scores), summarizer.extractive_summary(text, scores))
 
     def auto_tags(self, doc_id: int) -> None:
-        """Year, types, the main entity's name and the rules' tags; tags added by hand are never removed."""
+        """Year, types, the main entity's name, the rules' tags and the document's own keywords; tags added by hand
+        are never removed."""
         conn = self.db.conn
         row = conn.execute("SELECT doc_date, types, title, text FROM documents WHERE id = ?", (doc_id,)).fetchone()
         conn.execute("DELETE FROM doc_tags WHERE doc_id = ? AND source = 'auto'", (doc_id,))
@@ -138,26 +160,65 @@ class Processor:
         self.db.conn.execute("UPDATE documents SET embedding = ? WHERE id = ?", (vec_to_blob(vec), doc_id))
         return True
 
-    # ---------------------------------------------------------------- the whole pipeline
+    # ---------------------------------------------------------------- the whole analysis
+
+    def _set_status(self, doc_id: int, status: str, **fields) -> None:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        with self.db.tx():
+            self.db.conn.execute(f"UPDATE documents SET status = ?, updated_at = ?{', ' + sets if sets else ''} WHERE id = ?",
+                                 [status, now(), *fields.values(), doc_id])
 
     def process(self, doc_id: int, progress=None) -> None:
         conn = self.db.conn
         row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
-        if row is None or row["status"] == "password_required":
+        if row is None or row["status"] in ("password_required", "missing"):
             return
+        if row["work_path"] and not (self.config.data_dir / row["work_path"]).is_file():
+            # the decrypted copy is gone (data folder restored without it): decrypt again, with the saved password
+            self.db.conn.execute("UPDATE documents SET work_path = '' WHERE id = ?", (doc_id,))
+            row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
         path = self.path_of(row)
+        if path is None:
+            if not row["work_path"] and not conn.execute("SELECT 1 FROM locations WHERE doc_id = ?", (doc_id,)).fetchone():
+                self._set_status(doc_id, "missing", missing_at=now())
+                return
+            raise extract.ExtractError("fichier introuvable sur le disque (déplacé pendant l'analyse ? il sera repris au prochain scan)")
         cfg = self.config
+
+        if row["ext"] == "pdf" and not row["work_path"]:
+            kind = pdfcrypt.inspect(path)
+            if kind == pdfcrypt.USER_PASSWORD:
+                copy = cfg.unlocked_dir / f"{row['uuid']}.pdf"
+                for password in (self.vault.candidates(row["sha256"]) if self.vault else []):
+                    if pdfcrypt.decrypt(path, copy, password):  # a password typed before opens it: nothing to ask
+                        self.vault.remember(row["sha256"], password)
+                        self._set_status(doc_id, "processing", work_path=f"unlocked/{copy.name}", unlocked_at=now())
+                        path = copy
+                        break
+                else:
+                    self._set_status(doc_id, "password_required")  # waits for the password, neither read nor indexed
+                    return
+            if kind == pdfcrypt.OWNER_ONLY:
+                # restrictions only (no password to open): a restriction-free copy under /data, silently
+                copy = cfg.unlocked_dir / f"{row['uuid']}.pdf"
+                pdfcrypt.decrypt(path, copy)
+                self._set_status(doc_id, "processing", work_path=f"unlocked/{copy.name}", unlocked_at=now())
+                path = copy
+
         result = extract.extract(path, row["ext"], cfg.ocr_langs, cfg.ocr_threads, cfg.ocr_max_pages, progress)
         text, _masked = identifiers.mask_sensitive(result.text)
 
         if progress:
             progress("Analyse")
-        upload_day = dt.date.fromisoformat(row["created_at"][:10])
+        mtime = conn.execute("SELECT mtime_ns FROM locations WHERE doc_id = ? ORDER BY id LIMIT 1", (doc_id,)).fetchone()
+        fallback = (dt.date.fromtimestamp(mtime["mtime_ns"] / 1e9) if mtime else dt.date.fromisoformat(row["created_at"][:10]))
+        if fallback.year < 1980:
+            fallback = dt.date.today()
         if row["date_source"] == "manual" and row["doc_date"]:
             doc_date, source = row["doc_date"], "manual"
         else:
-            found = dates.detect(text, today=max(dt.date.today(), upload_day))
-            doc_date, source = (found.isoformat(), "detected") if found else (upload_day.isoformat(), "upload")
+            found = dates.detect(text, today=max(dt.date.today(), fallback))
+            doc_date, source = (found.isoformat(), "detected") if found else (fallback.isoformat(), "file")
 
         title = row["title"]
         if not row["title_manual"] and summarizer.is_junk_name(Path(row["original_name"]).stem):
@@ -165,8 +226,7 @@ class Processor:
 
         with self.db.tx():
             conn.execute("UPDATE documents SET title = ?, text = ?, pages = ?, ocr = ?, doc_date = ?, date_source = ?, "
-                         "updated_at = ? WHERE id = ?",
-                         (title, text, result.pages, int(result.ocr), doc_date, source, now(), doc_id))
+                         "updated_at = ? WHERE id = ?", (title, text, result.pages, int(result.ocr), doc_date, source, now(), doc_id))
             conn.execute("DELETE FROM doc_keys WHERE doc_id = ?", (doc_id,))
             for key in identifiers.extract(text, int(doc_date[:4])):
                 conn.execute("INSERT OR IGNORE INTO doc_keys(doc_id, key, value, label) VALUES (?, ?, ?, ?)",
@@ -176,16 +236,13 @@ class Processor:
         if progress:
             progress("Calcul de l'empreinte sémantique")
         self.embed(doc_id)
-        self.grouper.replace(doc_id)
         with self.db.tx():
             self.auto_tags(doc_id)
 
         if progress:
             progress("Vignette")
         thumbs.make(path, row["ext"], cfg.thumbs_dir / f"{row['uuid']}.webp", text)
-        with self.db.tx():
-            conn.execute("UPDATE documents SET status = 'done', error = NULL, processed_at = ?, updated_at = ? WHERE id = ?",
-                         (now(), now(), doc_id))
+        self._set_status(doc_id, "done", error=None, processed_at=now())
 
 
 class Worker:
@@ -259,8 +316,7 @@ class Worker:
         if not self.processor.embedder.available or self.embedded_version == self.processor.embedder.version:
             return
         self.embedded_version = self.processor.embedder.version
-        missing = [r["id"] for r in self.db.conn.execute(
-            "SELECT id FROM documents WHERE status = 'done' AND embedding IS NULL")]
+        missing = [r["id"] for r in self.db.conn.execute("SELECT id FROM documents WHERE status = 'done' AND embedding IS NULL")]
         for doc_id in missing:
             if self._stop.is_set():
                 return
@@ -268,8 +324,6 @@ class Worker:
             try:
                 with self.db.tx():
                     self.processor.embed(doc_id)
-                    self.processor.grouper.update_centroids(r["group_id"] for r in self.db.conn.execute(
-                        "SELECT group_id FROM doc_groups WHERE doc_id = ?", (doc_id,)))
             finally:
                 self.current = None
 
@@ -323,8 +377,6 @@ def reembed_all(processor: Processor, db: Database) -> None:
     for doc_id in ids:
         with db.tx():
             processor.embed(doc_id)
-    with db.tx():
-        processor.grouper.update_centroids(r["id"] for r in db.conn.execute("SELECT id FROM groups"))
 
 
-__all__ = ["Processor", "Worker", "index_document", "add_tag", "prune_tags", "reembed_all", "blob_to_vec"]
+__all__ = ["Processor", "Worker", "index_document", "add_tag", "prune_tags", "reembed_all", "posixpath"]

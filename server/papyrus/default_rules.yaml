@@ -1,13 +1,11 @@
 # Papyrus: default classification rules (French and Swiss personal paperwork).
 # Copy this file to conf/rules.yaml to replace it, then "Recharger les règles" in Administration.
 #
-# A type is a top-level group. A document gets every type whose keyword weights add up to the threshold or more
-# (a keyword counts once, wherever it appears; matching ignores case and accents). `subgroup_by` lists the keys
-# that name the sub-groups, best first (siret, siren, che_uid, tva, cadastre_ref, property_address, contract_no,
-# employer_name, company, year). `tags` are added to every document of the type. `skip_if` drops the type when
-# one of the listed types also matched (an electricity bill goes to Énergie, not to Factures as well).
-#
-# blacklist: keys never used to match documents (an address shared by unrelated things, a bank's own SIRET…).
+# A type says what kind of paper a document is: it becomes a tag and a filter. A document gets every type whose
+# keyword weights add up to the threshold or more (a keyword counts once, wherever it appears; matching ignores case
+# and accents). `tags` are added to every document of the type. `skip_if` drops the type when one of the listed
+# types also matched (an electricity bill is Énergie, not Factures as well). Your own folders do the classifying;
+# types only describe.
 
 types:
   - name: Fiches de paie
@@ -17,7 +15,6 @@ types:
                "net imposable": 2, "avs": 2, "lpp": 2, "ac ": 1, "urssaf": 1, "csg": 1, "lohnabrechnung": 3,
                "brutto": 1, "salaire net": 2, "heures": 1}
     threshold: 5
-    subgroup_by: [siret, che_uid, employer_name]
     tags: [salaire]
 
   - name: Immobilier
@@ -27,7 +24,6 @@ types:
                "acquéreur": 2, "vendeur": 1, "état des lieux": 2, "bail": 2, "appel de fonds": 2, "tantièmes": 2,
                "registre foncier": 3, "bien-fonds": 3, "prêt immobilier": 3, "dpe": 1}
     threshold: 4
-    subgroup_by: [cadastre_ref, property_address]
     tags: [immobilier]
 
   - name: Impôts
@@ -37,7 +33,6 @@ types:
                "prélèvement à la source": 2, "administration fiscale": 3, "déclaration d'impôt": 4,
                "taxation": 1, "impôt fédéral direct": 4, "bordereau": 1, "contributions": 1}
     threshold: 4
-    subgroup_by: [year]
     tags: [impôts]
 
   - name: Énergie
@@ -46,7 +41,6 @@ types:
                "consommation": 1, "abonnement": 1, "point de livraison": 2, "pdl": 1, "fioul": 2, "romande energie": 3,
                "sig ": 1, "relève": 1}
     threshold: 4
-    subgroup_by: [company, contract_no]
     tags: [facture, énergie]
 
   - name: Télécom
@@ -54,7 +48,6 @@ types:
     keywords: {"forfait": 2, "mobile": 1, "box": 1, "fibre": 2, "orange": 1, "sfr": 2, "bouygues": 2, "free": 1,
                "swisscom": 3, "salt": 1, "sunrise": 2, "internet": 1, "ligne": 1, "appels": 1, "data": 1, "sim": 1}
     threshold: 4
-    subgroup_by: [company, contract_no]
     tags: [facture, télécom]
 
   - name: Factures
@@ -62,7 +55,6 @@ types:
     keywords: {"facture": 3, "invoice": 3, "montant ttc": 2, "total ttc": 2, "tva": 1, "montant ht": 2, "à payer": 1,
                "échéance": 1, "rechnung": 3, "mwst": 1, "bulletin de versement": 2, "qr-facture": 3, "référence client": 1}
     threshold: 4
-    subgroup_by: [siret, siren, che_uid, tva, company]
     skip_if: [Énergie, Télécom, Fiches de paie, Impôts]
     tags: [facture]
 
@@ -73,7 +65,6 @@ types:
                "postfinance": 3, "raiffeisen": 2, "banque cantonale": 2, "carte bancaire": 2, "rib": 2,
                "relevé d'identité bancaire": 4, "nouveau solde": 2, "ancien solde": 2}
     threshold: 4
-    subgroup_by: [company, contract_no]
     tags: [banque]
 
   - name: Assurance
@@ -82,7 +73,6 @@ types:
                "avis d'échéance": 3, "attestation d'assurance": 4, "responsabilité civile": 2, "franchise": 1,
                "prime": 1, "multirisque habitation": 3, "versicherung": 3}
     threshold: 4
-    subgroup_by: [contract_no, company]
     tags: [assurance]
 
   - name: Santé
@@ -91,7 +81,6 @@ types:
                "sécurité sociale": 2, "caisse maladie": 3, "lamal": 3, "patient": 2, "consultation": 2,
                "analyses": 1, "laboratoire": 1, "pharmacie": 2, "hôpital": 2, "clinique": 2, "décompte de prestations": 3}
     threshold: 4
-    subgroup_by: [company]
     tags: [santé]
 
   - name: Véhicule
@@ -100,7 +89,6 @@ types:
                "permis de conduire": 3, "garage": 2, "vidange": 2, "kilométrage": 2, "véhicule": 2, "pneus": 1,
                "permis de circulation": 4, "expertise": 1}
     threshold: 4
-    subgroup_by: [contract_no, company]
     tags: [véhicule]
 
   - name: Identité
@@ -108,7 +96,6 @@ types:
     keywords: {"carte nationale d'identité": 4, "passeport": 4, "acte de naissance": 4, "livret de famille": 4,
                "titre de séjour": 4, "permis b": 2, "état civil": 2, "extrait d'acte": 3, "nationalité": 1}
     threshold: 4
-    subgroup_by: []
     tags: [identité]
 
   - name: Études
@@ -118,7 +105,6 @@ types:
                "ministère de l'éducation": 3, "enseignement supérieur": 2, "jury": 1, "bulletin scolaire": 3,
                "école": 1, "formation": 1, "diploma": 3}
     threshold: 4
-    subgroup_by: []
     tags: [diplôme, études]
 
   - name: Emploi
@@ -127,7 +113,6 @@ types:
                "solde de tout compte": 4, "attestation employeur": 4, "certificat de travail": 4, "france travail": 3,
                "pôle emploi": 3, "rupture conventionnelle": 4, "promesse d'embauche": 4, "arbeitsvertrag": 4}
     threshold: 4
-    subgroup_by: [siret, che_uid, employer_name]
     tags: [emploi]
 
 # Tags given from the words of a document, whatever its type (title or beginning of the text, or twice in the text).
@@ -150,5 +135,3 @@ tag_keywords:
   remboursement: ["remboursement", "rembourse"]
   voyage: ["billet", "réservation", "boarding pass", "itinéraire", "hôtel"]
 
-blacklist: []
-#  - {key: property_address, value: "8 rue de la paix 75002 paris"}

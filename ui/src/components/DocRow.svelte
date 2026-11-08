@@ -4,29 +4,21 @@
   import Thumb from './Thumb.svelte';
   import Icon from './Icon.svelte';
   export let doc;
-  export let from = null; // the group list this row is shown in (a drag moves the document out of it)
   export let snippet = '';
   export let match = '';
 
-  function dragstart(e) {
-    e.dataTransfer.setData('application/x-papyrus-doc', JSON.stringify({ ids: [doc.id], from }));
-    e.dataTransfer.effectAllowed = 'move';
-  }
-  $: shownGroups = doc.groups.filter((g) => !g.inbox || doc.groups.length === 1).slice(0, 3);
-  $: more = doc.groups.length - shownGroups.length;
+  $: place = doc.folder ? doc.folder : doc.path ? 'racine' : '';
   $: state = doc.status === 'pending' ? 'En attente' : doc.status === 'processing' ? 'Analyse en cours' : doc.status === 'error' ? 'Échec du traitement' : '';
 </script>
 
-<a class="row" href="/documents/{doc.id}" use:link draggable="true" on:dragstart={dragstart}>
+<a class="row" href="/documents/{doc.id}" use:link>
   <Thumb {doc} width={52} />
   <div class="main">
     <div class="title">{doc.title}</div>
     {#if snippet}<div class="snippet muted">… {@html snippet} …</div>{:else if doc.summary}<div class="snippet muted one">{doc.summary}</div>{/if}
     <div class="chips">
-      {#each shownGroups as g (g.id)}
-        <span class="chip" title={g.path}><span class="dot" style="background:{g.color}"></span><span>{g.path}</span></span>
-      {/each}
-      {#if more > 0}<span class="tag">+{more}</span>{/if}
+      {#if place}<span class="chip" title={doc.path}><Icon name="folder" size={12} /><span>{place}</span></span>{/if}
+      {#if doc.copies > 1}<span class="tag">{doc.copies} copies</span>{/if}
       {#each doc.tags.slice(0, 4) as t (t.id)}<span class="tag">{t.name}</span>{/each}
       {#if match}<span class="how muted">{match}</span>{/if}
     </div>

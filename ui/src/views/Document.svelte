@@ -1,14 +1,13 @@
 <script>
   import { route, navigate, goBack, link } from '../lib/router.js';
-  import { groups, loadGroups, toast, bumpDocs, docsVersion, groupPath } from '../lib/stores.js';
+  import { loadFolders, toast, bumpDocs, docsVersion } from '../lib/stores.js';
   import { get, post, patch, del } from '../lib/api.js';
   import { formatDate, toInputDate, fromInputDate, formatSize, dateTime } from '../lib/format.js';
   import Icon from '../components/Icon.svelte';
-  import Modal from '../components/Modal.svelte';
   import Confirm from '../components/Confirm.svelte';
   import Thumb from '../components/Thumb.svelte';
 
-  let doc = null, similar = [], error = '', title = '', dateText = '', dateError = '', showText = false, dialog = null, pick = '', busy = false, newTag = '', addingTag = false;
+  let doc = null, similar = [], error = '', title = '', dateText = '', dateError = '', showText = false, dialog = null, busy = false, newTag = '', addingTag = false;
   $: id = $route.params.id;
   $: load(id, $docsVersion);
   let timer;
@@ -27,7 +26,7 @@
   function adopt(d) { doc = d; title = d.title; dateText = toInputDate(d.date); dateError = ''; }
 
   async function save(body) {
-    try { adopt(await patch(`/documents/${id}`, body)); bumpDocs(); await loadGroups(); } catch (e) { toast(e.message, 'error'); }
+    try { adopt(await patch(`/documents/${id}`, body)); bumpDocs(); } catch (e) { toast(e.message, 'error'); }
   }
   const saveTitle = () => { const t = title.trim(); if (t && t !== doc.title) save({ title: t }); else title = doc.title; };
   function saveDate() {
@@ -37,22 +36,18 @@
     if (iso !== doc.date) save({ doc_date: iso });
   }
   async function act(fn, ok) { busy = true; try { await fn(); if (ok) toast(ok, 'success'); } catch (e) { toast(e.message, 'error'); } busy = false; }
-  const addGroup = () => act(async () => { await post(`/groups/${pick}/documents`, { doc_ids: [id] }); dialog = null; adopt(await get(`/documents/${id}`)); await loadGroups(); bumpDocs(); }, 'Document classé.');
-  const removeGroup = (g) => act(async () => { await del(`/groups/${g.id}/documents/${id}`); adopt(await get(`/documents/${id}`)); await loadGroups(); bumpDocs(); });
-  const accept = (s) => act(async () => { adopt(await post(`/documents/${id}/suggestions/${s.group_id}/accept`)); await loadGroups(); bumpDocs(); }, 'Document classé.');
   const addTag = () => act(async () => { const n = newTag.trim(); if (!n) return; adopt(await post(`/documents/${id}/tags`, { name: n })); newTag = ''; addingTag = false; bumpDocs(); });
   const removeTag = (t) => act(async () => { adopt(await del(`/documents/${id}/tags/${t.id}`)); bumpDocs(); });
   const reprocess = () => act(async () => { await post(`/documents/${id}/reprocess`); await load(id); bumpDocs(); }, 'Analyse relancée.');
-  const remove = () => act(async () => { await del(`/documents/${id}`); dialog = null; await loadGroups(); bumpDocs(); toast('Document supprimé.', 'success'); navigate('/', { replace: true }); });
-  const toggleLock = () => save({ locked: !doc.locked });
+  const forget = () => act(async () => { await del(`/documents/${id}`); dialog = null; await loadFolders(); bumpDocs(); toast('Document retiré de Papyrus. Ton fichier n\'a pas bougé.', 'success'); navigate('/', { replace: true }); });
 
-  $: available = $groups.filter((g) => !g.inbox && !doc?.groups.some((x) => x.id === g.id));
   const MONO = ['siret', 'siren', 'che_uid', 'tva', 'contract_no', 'cadastre_ref'];
   const KEYS = { siret: 'SIRET', siren: 'SIREN', che_uid: 'IDE', tva: 'TVA', cadastre_ref: 'Cadastre', property_address: 'Adresse', contract_no: 'Contrat', employer_name: 'Employeur', company: 'Société', year: 'Année' };
-  $: shownKeys = doc ? doc.keys.filter((k) => k.key !== 'year' && !(k.key === 'siren' && doc.keys.some((x) => x.key === 'siret' && x.value.startsWith(k.value))) && k.key !== 'company' || (k.key === 'company' && !doc.keys.some((x) => x.key === 'employer_name'))) : [];
+  $: shownKeys = doc ? doc.keys.filter((k) => k.key !== 'year' && !(k.key === 'siren' && doc.keys.some((x) => x.key === 'siret' && x.value.startsWith(k.value))) && (k.key !== 'company' || !doc.keys.some((x) => x.key === 'employer_name'))) : [];
   $: isImage = doc && ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(doc.ext);
   $: canFrame = doc && doc.ext === 'pdf';
   $: fileUrl = `/api/documents/${id}/file`;
+  const DATE_SOURCE = { detected: 'détectée dans le texte', manual: 'saisie à la main', file: 'date de modification du fichier' };
 </script>
 
 <div class="wrap">
@@ -63,7 +58,7 @@
       <div class="acts">
         <a class="btn" href="{fileUrl}?download=1" download><Icon name="download" /><span class="hide">Télécharger l'original</span></a>
         <button class="btn" disabled={busy || doc.status === 'processing'} on:click={reprocess}><Icon name="refresh" /><span class="hide">Relancer l'analyse</span></button>
-        <button class="btn danger" on:click={() => (dialog = 'delete')}><Icon name="trash" /><span class="hide">Supprimer</span></button>
+        <button class="btn danger" on:click={() => (dialog = 'forget')}><Icon name="trash" /><span class="hide">Retirer de Papyrus</span></button>
       </div>
     {/if}
   </div>
@@ -73,11 +68,15 @@
   {:else if !doc}
     <div class="body"><div class="skeleton" style="flex:1;min-height:600px"></div><div class="panel"><div class="skeleton" style="height:300px"></div></div></div>
   {:else}
-    {#if doc.status === 'error'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="alert" /></span>Le traitement a échoué : {doc.error}. Le fichier est conservé ; tu peux relancer l'analyse.</div>
-    {:else if doc.status === 'pending' || doc.status === 'processing'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="clock" /></span>{doc.status === 'processing' ? 'Analyse en cours…' : 'En attente de traitement…'} Le texte, la date et les groupes apparaissent ici dès que c'est prêt.</div>{/if}
+    {#if doc.status === 'error'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="alert" /></span>Le traitement a échoué : {doc.error}. Tu peux relancer l'analyse.</div>
+    {:else if doc.status === 'password_required'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="lock" /></span>Ce PDF est protégé par un mot de passe : <a href="/unlock" use:link style="text-decoration:underline">le déverrouiller</a>.</div>
+    {:else if doc.status === 'missing'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="alert" /></span>Le fichier n'est plus dans les dossiers analysés. Il reviendra de lui-même s'il réapparaît.</div>
+    {:else if doc.status === 'pending' || doc.status === 'processing'}<div class="banner" style="padding:9px 20px"><span class="icon"><Icon name="clock" /></span>{doc.status === 'processing' ? 'Analyse en cours…' : 'En attente d\'analyse…'} Le texte, la date et les tags apparaissent ici dès que c'est prêt.</div>{/if}
     <div class="body">
       <section class="preview" aria-label="Aperçu">
-        {#if canFrame}
+        {#if doc.status === 'password_required' || doc.status === 'missing'}
+          <div class="paper"><div class="muted note">Aperçu indisponible.</div></div>
+        {:else if canFrame}
           <iframe title="Aperçu de {doc.title}" src="{fileUrl}#toolbar=1&navpanes=0"></iframe>
         {:else if isImage}
           <img class="img" src={fileUrl} alt="Aperçu de {doc.title}" />
@@ -92,21 +91,17 @@
             <input class="input" bind:value={title} on:blur={saveTitle} on:keydown={(e) => e.key === 'Enter' && e.target.blur()} maxlength="300" /></label>
           <label class="field"><span class="label">Date du document</span>
             <div class="row"><input class="input date" class:invalid={dateError} bind:value={dateText} on:blur={saveDate} on:keydown={(e) => e.key === 'Enter' && e.target.blur()} placeholder="jj/mm/aaaa" inputmode="numeric" />
-              <span class="muted small">{doc.date_source === 'detected' ? 'détectée dans le texte' : doc.date_source === 'manual' ? 'saisie à la main' : "date d'import"}</span></div>
+              <span class="muted small">{DATE_SOURCE[doc.date_source] || ''}</span></div>
             {#if dateError}<span class="err">{dateError}</span>{/if}</label>
-          <div class="field"><span class="label">Groupes</span>
-            <div class="chips">
-              {#each doc.groups as g (g.id)}
-                <span class="chip lg"><span class="dot" style="background:{g.color}"></span><a href="/groups/{g.id}" use:link>{g.path}</a>
-                  {#if doc.groups.length > 1 || !g.inbox}<button aria-label="Retirer du groupe {g.path}" on:click={() => removeGroup(g)}><Icon name="x" size={12} /></button>{/if}</span>
-              {/each}
-              <button class="add" on:click={() => { dialog = 'group'; pick = ''; }}>+ Ajouter à un groupe</button>
+          <div class="field"><span class="label">{doc.locations.length > 1 ? `Emplacements (${doc.locations.length} copies)` : 'Emplacement'}</span>
+            <div class="places">
+              {#each doc.locations as l (l.path)}
+                <a class="place" href="/?folder={encodeURIComponent(l.folder || '.')}" use:link title="Voir ce dossier">
+                  <Icon name="folder" size={14} /><span class="mono path">{l.path}</span>
+                </a>
+              {:else}<span class="muted small">Plus dans les dossiers analysés.</span>{/each}
             </div>
-            {#if doc.suggestion_applied}<span class="muted small">Groupe proposé par similarité avec tes autres documents, à confirmer.</span>{/if}
-            {#if doc.suggestions.length}
-              <div class="sugg"><span class="muted small">Groupes suggérés :</span>
-                {#each doc.suggestions as s (s.group_id)}<button class="chip lg act" on:click={() => accept(s)}><span class="dot" style="background:{s.group.color}"></span><span>{s.group.path}</span></button>{/each}</div>
-            {/if}</div>
+            <span class="muted small">C'est toi qui ranges : déplace ou renomme le fichier, Papyrus le suit (même contenu, même fiche).</span></div>
           <div class="field"><span class="label">Tags</span>
             <div class="chips">
               {#each doc.tags as t (t.id)}<span class="tag lg">{t.name}<button aria-label="Retirer le tag {t.name}" on:click={() => removeTag(t)}><Icon name="x" size={12} /></button></span>{/each}
@@ -114,8 +109,6 @@
                 <form on:submit|preventDefault={addTag}><input class="input tagin" bind:value={newTag} maxlength="60" placeholder="Nouveau tag" data-autofocus on:blur={() => { if (!newTag) addingTag = false; }} /></form>
               {:else}<button class="add" on:click={() => { addingTag = true; setTimeout(() => document.querySelector('.tagin')?.focus(), 0); }}>+ Tag</button>{/if}
             </div></div>
-          <label class="lockrow"><input type="checkbox" checked={doc.locked} on:change={toggleLock} />
-            <span><span>Verrouiller le classement</span><span class="muted small block">Le reclassement automatique ne touchera plus ce document.</span></span></label>
         </div>
 
         {#if doc.summary}
@@ -142,7 +135,7 @@
             {#each similar as s (s.id)}
               <a class="sim" href="/documents/{s.id}" use:link>
                 <Thumb doc={s} width={30} ratio={1.33} />
-                <span class="st"><span class="sn">{s.title}</span><span class="muted small">{formatDate(s.date)}</span></span>
+                <span class="st"><span class="sn">{s.title}</span><span class="muted small">{s.folder || 'racine'} · {formatDate(s.date)}</span></span>
                 <span class="muted small score">{String(s.score).replace('.', ',')}</span>
               </a>
             {/each}
@@ -152,32 +145,22 @@
         <div class="blk">
           <button class="fold" aria-expanded={showText} on:click={() => (showText = !showText)}><Icon name={showText ? 'chevronDown' : 'chevronRight'} />Texte extrait ({doc.ocr ? 'OCR' : 'texte du fichier'}, {doc.pages} page{doc.pages > 1 ? 's' : ''})</button>
           {#if showText}<pre class="text">{doc.text || '(aucun texte extrait)'}</pre>{/if}
-          <p class="muted small">Importé le {dateTime(doc.created_at)} · {doc.original_name} · {formatSize(doc.size)}{#if doc.unlocked_at} · déverrouillé le {dateTime(doc.unlocked_at)}{/if}</p>
+          <p class="muted small">Repéré le {dateTime(doc.created_at)} · {doc.original_name} · {formatSize(doc.size)}{#if doc.unlocked_at} · déverrouillé le {dateTime(doc.unlocked_at)}{/if}</p>
         </div>
       </aside>
     </div>
   {/if}
 </div>
 
-{#if dialog === 'group'}
-  <Modal title="Ajouter à un groupe" on:close={() => (dialog = null)}>
-    <form on:submit|preventDefault={addGroup} class="mform">
-      <label class="field"><span class="label">Groupe</span>
-        <select class="input" bind:value={pick} required data-autofocus><option value="" disabled>Choisir un groupe…</option>{#each available as g (g.id)}<option value={g.id}>{groupPath($groups, g.id)}</option>{/each}</select></label>
-      <p class="muted small">Papyrus retient l'adresse, le SIRET… de ce document pour ranger les prochains au même endroit.</p>
-      <div class="foot"><button type="button" class="btn" on:click={() => (dialog = null)}>Annuler</button><button class="btn primary" disabled={!pick || busy}>Ajouter au groupe</button></div>
-    </form>
-  </Modal>
-{:else if dialog === 'delete'}
-  <Confirm title="Supprimer le document" confirm="Supprimer le document" danger {busy} on:close={() => (dialog = null)} on:confirm={remove}>
-    « {doc?.title} » et son fichier original seront supprimés définitivement.
+{#if dialog === 'forget'}
+  <Confirm title="Retirer de Papyrus" confirm="Retirer de Papyrus" danger {busy} on:close={() => (dialog = null)} on:confirm={forget}>
+    « {doc?.title} » disparaît de Papyrus (analyse, tags, titre) et ne sera plus jamais ré-indexé, même si une copie traîne ailleurs. <strong>Ton fichier reste où il est, intact.</strong> Pour le réintégrer : Administration → Réintégrer les documents retirés.
   </Confirm>
 {/if}
 
 <style>
   .wrap { display: flex; flex-direction: column; min-height: calc(100vh - 60px); }
   .bar { min-height: 56px; display: flex; align-items: center; gap: 10px; padding: 8px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .bar :global(.icon) { transform-origin: center; }
   .back :global(.icon) { transform: rotate(180deg); }
   .bar > button :global(svg) { transform: rotate(180deg); }
   .crumb { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
@@ -196,24 +179,22 @@
   .row { display: flex; gap: 10px; align-items: center; }
   .date { max-width: 150px; }
   .small { font-size: 12.5px; }
-  .digest { font-size: 13.5px; line-height: 1.55; }
-  .block { display: block; }
   .err { color: var(--danger); font-size: 12.5px; }
+  .places { display: flex; flex-direction: column; gap: 4px; }
+  .place { display: flex; align-items: center; gap: 8px; padding: 5px 8px; margin: 0 -8px; border-radius: var(--r-control); color: var(--text); }
+  .place:hover { background: var(--surface-2); }
+  .place :global(.icon) { color: var(--text-muted); }
+  .path { word-break: break-all; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  .chip.lg, .tag.lg { height: 26px; font-size: 13px; padding: 0 4px 0 9px; gap: 6px; }
-  .chip.lg a:hover { text-decoration: underline; }
-  .chip button, .tag button { border: 0; background: transparent; color: var(--text-muted); width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; padding: 0; }
-  .chip button:hover, .tag button:hover { background: var(--border); color: var(--text); }
-  .chip.act { padding: 0 9px; background: transparent; }
-  .chip.act:hover { background: var(--accent-soft); }
-  .sugg { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
+  .tag.lg { height: 26px; font-size: 13px; padding: 0 4px 0 9px; gap: 6px; color: var(--text); }
+  .tag button { border: 0; background: transparent; color: var(--text-muted); width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; padding: 0; }
+  .tag button:hover { background: var(--border); color: var(--text); }
   .add { height: 26px; padding: 0 9px; border-radius: var(--r-control); font-size: 13px; border: 1px dashed var(--border); color: var(--text-muted); background: transparent; }
   .add:hover { color: var(--text); border-color: var(--text-muted); }
   .tagin { height: 26px; width: 130px; font-size: 13px; }
-  .lockrow { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; }
-  .lockrow input { accent-color: var(--accent); width: 16px; height: 16px; margin-top: 3px; }
   .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; font-size: 13px; align-items: baseline; word-break: break-word; }
   .sans { font-family: var(--font); }
+  .digest { font-size: 13.5px; line-height: 1.55; }
   .sim { display: flex; align-items: center; gap: 10px; padding: 5px; margin: 0 -5px; border-radius: var(--r-control); }
   .sim:hover { background: var(--surface-2); }
   .st { flex: 1; min-width: 0; display: flex; flex-direction: column; }
@@ -221,7 +202,5 @@
   .score { font-variant-numeric: tabular-nums; }
   .fold { display: flex; align-items: center; gap: 8px; border: 0; background: transparent; font-weight: 700; font-size: 13.5px; padding: 0; text-align: left; }
   .text { max-height: 360px; overflow: auto; white-space: pre-wrap; font: 12.5px/1.6 var(--mono); background: var(--surface-2); padding: 12px; border-radius: var(--r-control); margin: 0; }
-  .mform { display: flex; flex-direction: column; gap: 14px; }
-  .foot { display: flex; gap: 8px; justify-content: flex-end; }
   @media (max-width: 900px) { .hide { display: none; } .panel { max-width: none; border-left: 0; border-top: 1px solid var(--border); } .preview { padding: 12px; } iframe { min-height: 60vh; } }
 </style>

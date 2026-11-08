@@ -4,7 +4,7 @@
   export let ratio = 1.32;
   let failed = false;
   $: height = Math.round(width * ratio);
-  $: color = doc.groups?.[0]?.color || '#7C8AA5';
+  const color = '#7C8AA5';
   $: pending = doc.status === 'pending' || doc.status === 'processing';
 </script>
 

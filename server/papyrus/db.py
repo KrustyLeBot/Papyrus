@@ -11,9 +11,10 @@ from pathlib import Path
 
 import numpy as np
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
+-- one row per distinct file content (SHA-256); the files themselves stay where the user keeps them
 CREATE TABLE IF NOT EXISTS documents (
     id              INTEGER PRIMARY KEY,
     uuid            TEXT NOT NULL UNIQUE,
@@ -23,31 +24,47 @@ CREATE TABLE IF NOT EXISTS documents (
     ext             TEXT NOT NULL,
     mime            TEXT NOT NULL DEFAULT '',
     size            INTEGER NOT NULL DEFAULT 0,
-    sha256          TEXT NOT NULL,
-    sha256_encrypted TEXT,
-    path            TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',
+    sha256          TEXT NOT NULL UNIQUE,
+    work_path       TEXT NOT NULL DEFAULT '',   -- decrypted copy under /data (protected PDFs), else ''
+    status          TEXT NOT NULL DEFAULT 'pending',  -- pending processing done error password_required missing
     error           TEXT,
     text            TEXT NOT NULL DEFAULT '',
     pages           INTEGER NOT NULL DEFAULT 0,
     ocr             INTEGER NOT NULL DEFAULT 0,
     doc_date        TEXT,
-    date_source     TEXT NOT NULL DEFAULT 'upload',
+    date_source     TEXT NOT NULL DEFAULT 'file',
     types           TEXT NOT NULL DEFAULT '[]',
-    locked          INTEGER NOT NULL DEFAULT 0,
-    unlocked_at     TEXT,
-    suggestions     TEXT NOT NULL DEFAULT '[]',
-    suggestion_applied INTEGER NOT NULL DEFAULT 0,
     summary         TEXT NOT NULL DEFAULT '',
     embedding       BLOB,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
-    processed_at    TEXT
+    processed_at    TEXT,
+    unlocked_at     TEXT,
+    missing_at      TEXT
 );
-CREATE INDEX IF NOT EXISTS documents_sha ON documents(sha256);
-CREATE INDEX IF NOT EXISTS documents_sha_enc ON documents(sha256_encrypted);
 CREATE INDEX IF NOT EXISTS documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS documents_date ON documents(doc_date);
+
+-- where a document is: one row per file path (relative to the source folder). Several paths = several copies.
+CREATE TABLE IF NOT EXISTS locations (
+    id       INTEGER PRIMARY KEY,
+    doc_id   INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    path     TEXT NOT NULL UNIQUE,
+    folder   TEXT NOT NULL,
+    size     INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    seen     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS locations_doc ON locations(doc_id);
+CREATE INDEX IF NOT EXISTS locations_folder ON locations(folder);
+
+-- documents the user removed from Papyrus: never indexed again, wherever a copy sits
+CREATE TABLE IF NOT EXISTS ignored (
+    sha256     TEXT PRIMARY KEY,
+    title      TEXT NOT NULL DEFAULT '',
+    path       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS doc_keys (
     doc_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -56,39 +73,14 @@ CREATE TABLE IF NOT EXISTS doc_keys (
     label   TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (doc_id, key, value)
 );
-CREATE INDEX IF NOT EXISTS doc_keys_kv ON doc_keys(key, value);
 
-CREATE TABLE IF NOT EXISTS groups (
-    id          INTEGER PRIMARY KEY,
-    parent_id   INTEGER REFERENCES groups(id) ON DELETE CASCADE,
-    name        TEXT NOT NULL,
-    color       TEXT,
-    type_name   TEXT,
-    is_inbox    INTEGER NOT NULL DEFAULT 0,
-    auto        INTEGER NOT NULL DEFAULT 0,
-    centroid    BLOB,
-    centroid_n  INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL
+-- passwords of protected PDFs, by the SHA-256 of the document they opened; encrypted with the Papyrus key (vault.py)
+CREATE TABLE IF NOT EXISTS doc_passwords (
+    sha256     TEXT PRIMARY KEY,
+    secret     BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    used_at    TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS groups_parent ON groups(parent_id);
-
-CREATE TABLE IF NOT EXISTS group_keys (
-    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    key      TEXT NOT NULL,
-    value    TEXT NOT NULL,
-    label    TEXT NOT NULL DEFAULT '',
-    source   TEXT NOT NULL DEFAULT 'auto',
-    PRIMARY KEY (group_id, key, value)
-);
-CREATE INDEX IF NOT EXISTS group_keys_kv ON group_keys(key, value);
-
-CREATE TABLE IF NOT EXISTS doc_groups (
-    doc_id   INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    source   TEXT NOT NULL DEFAULT 'auto',
-    PRIMARY KEY (doc_id, group_id)
-);
-CREATE INDEX IF NOT EXISTS doc_groups_group ON doc_groups(group_id);
 
 CREATE TABLE IF NOT EXISTS tags (
     id   INTEGER PRIMARY KEY,
@@ -116,11 +108,11 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-    title, body, filename, tags,
+    title, body, filename, tags, folder,
     tokenize = 'unicode61 remove_diacritics 2'
 );
 
--- how many documents hold each word of the body (the IDF of the keyword scores)
+-- every word of the index with its document count: the IDF of the keyword scores, and the spelling corrector
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_vocab USING fts5vocab(docs_fts, col);
 """
 
@@ -132,10 +124,11 @@ class Database:
         self._all: list[sqlite3.Connection] = []
         self._lock = threading.Lock()
         with self.connect() as conn:
+            old = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'groups'").fetchone()
+            if old:
+                raise SystemExit(f"papyrus: {path} comes from an older Papyrus (upload and groups). The folders model starts "
+                                 "from a new data folder: point /data at an empty one.")
             conn.executescript(SCHEMA)
-            columns = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
-            if "summary" not in columns:  # a database made before the summaries existed
-                conn.execute("ALTER TABLE documents ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
             conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def _open(self) -> sqlite3.Connection:

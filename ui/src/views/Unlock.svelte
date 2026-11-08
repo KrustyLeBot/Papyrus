@@ -15,7 +15,7 @@
   {#each items as d (d.id)}
     <div class="row">
       <span class="ic"><Icon name="lock" /></span>
-      <div class="info"><div class="t">{d.original_name}</div><div class="muted s">Importé le {dateTime(d.created_at)} · {formatSize(d.size)}</div></div>
+      <div class="info"><div class="t">{d.original_name}</div><div class="muted s mono">{d.path || ""}</div><div class="muted s">{formatSize(d.size)} · repéré le {dateTime(d.created_at)}</div></div>
       <button class="btn" on:click={() => unlockTarget.set(d)}>Saisir le mot de passe</button>
     </div>
   {:else}

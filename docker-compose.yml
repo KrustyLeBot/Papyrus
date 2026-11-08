@@ -1,11 +1,12 @@
 # Papyrus on a Synology NAS. Put this file in /volume1/docker/papyrus/, next to a `.env` made from .env.example
 # and a conf/ folder holding httpasswd (see README), then:  docker compose up -d
 #
+# Papyrus reads the folders you keep (PAPYRUS_SOURCE_HOST, mounted READ-ONLY on /source): it indexes their PDF and
+# DOCX files, never changes or deletes anything there. Its own state (database, thumbnails, unlocked copies of
+# protected PDFs, embeddings model, daily snapshots) lives in PAPYRUS_DATA_HOST, away from your documents.
+#
 # The image comes from GitHub (built by the CI at each push to main). To build it on the NAS instead, replace
 # `image:` by `build: .` and run `docker compose up -d --build`.
-#
-# Hardened like the other apps: unprivileged, no capability, read-only root filesystem, nothing leaves the NAS but
-# the embeddings model download at first start (or BAKE_MODEL=1 at build time, or a local MODEL_URL mirror).
 x-logging: &logging
   driver: json-file
   options: { max-size: "10m", max-file: "3" }
@@ -16,7 +17,7 @@ services:
     container_name: papyrus
     restart: unless-stopped
     logging: *logging
-    # the owner of the data folder: files copied by hand and files written by Papyrus stay one owner's
+    # the owner of both folders (`id <user>` on the NAS)
     user: "${PUID}:${PGID}"
     security_opt: [ "no-new-privileges:true" ]
     cap_drop: [ ALL ]
@@ -27,6 +28,7 @@ services:
     environment:
       TZ: Europe/Paris
     volumes:
+      - ${PAPYRUS_SOURCE_HOST}:/source:ro
       - ${PAPYRUS_DATA_HOST}:/data
       - ./conf:/conf:ro
     ports:
