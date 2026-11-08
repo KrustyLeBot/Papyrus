@@ -102,14 +102,36 @@ def ocr_image(image: Path, langs: str, threads: int) -> str:
     if angle:
         from PIL import Image
 
+        Image.MAX_IMAGE_PIXELS = 200_000_000  # our own rendering, capped above: no "decompression bomb" warning
         with Image.open(image) as img:
             img.rotate(-angle, expand=True, fillcolor=255 if img.mode == "L" else (255, 255, 255)).save(image)
     return _run(["tesseract", str(image), "stdout", "-l", langs, "--psm", "3"], env=env).decode("utf-8", "replace")
 
 
+MAX_OCR_PIXELS = 60_000_000  # a plan or a poster at 300 dpi is 100+ megapixels: Tesseract would take forever
+MIN_OCR_DPI = 100
+
+
+def page_dpi(path: Path, page: int, wanted: int = 300) -> int:
+    """300 dpi, lowered for a very large page so the rendered image stays under MAX_OCR_PIXELS."""
+    try:
+        out = _run(["pdfinfo", "-f", str(page), "-l", str(page), str(path)]).decode("utf-8", "replace")
+        m = re.search(r"Page\s+%d\s+size:\s+([\d.]+)\s+x\s+([\d.]+)\s+pts" % page, out)
+        if not m:
+            return wanted
+        width, height = float(m.group(1)), float(m.group(2))
+    except ExtractError:
+        return wanted
+    if width <= 0 or height <= 0:
+        return wanted
+    fits = int(72 * (MAX_OCR_PIXELS / (width * height)) ** 0.5)
+    return max(MIN_OCR_DPI, min(wanted, fits))
+
+
 def _ocr_pdf_page(path: Path, page: int, langs: str, threads: int, workdir: Path) -> str:
     prefix = workdir / f"p{page}"
-    _run(["pdftoppm", "-r", "300", "-gray", "-png", "-f", str(page), "-l", str(page), "-singlefile", str(path), str(prefix)])
+    _run(["pdftoppm", "-r", str(page_dpi(path, page)), "-gray", "-png", "-f", str(page), "-l", str(page), "-singlefile",
+          str(path), str(prefix)])
     image = prefix.with_suffix(".png")
     try:
         return ocr_image(image, langs, threads)
@@ -145,6 +167,7 @@ def to_png(path: Path, target: Path, max_side: int | None = None) -> None:
     """Any image Pillow reads (HEIC too when pillow-heif is installed), turned upright, written as PNG."""
     from PIL import Image, ImageOps
 
+    Image.MAX_IMAGE_PIXELS = 200_000_000  # a 100-megapixel scan is the user's own; beyond twice that is refused
     try:
         import pillow_heif  # noqa: F401
 

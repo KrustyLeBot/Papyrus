@@ -53,3 +53,36 @@ def test_semantic_search_only_returns_real_matches(client, services, tmp_path):
     # the threshold is adjustable: at the maximum nothing is « close enough » unless the words match
     client.put("/api/admin/search-settings", json={"semantic_min": 0.95, "prefix": True, "fuzzy": True})
     assert all(d["match"] == "texte" for d in client.get("/api/search", params={"q": "feuille de salaire"}).json()["items"])
+
+
+def test_a_poster_sized_page_is_rendered_below_the_pixel_cap(tmp_path):
+    from reportlab.lib.pagesizes import A0, A4
+    from reportlab.pdfgen import canvas
+
+    from papyrus import extract
+
+    for name, size in (("a4.pdf", A4), ("a0.pdf", A0)):
+        c = canvas.Canvas(str(tmp_path / name), pagesize=size)
+        c.drawString(100, size[1] - 100, "PLAN DE MASSE")
+        c.save()
+    assert extract.page_dpi(tmp_path / "a4.pdf", 1) == 300
+    a0 = extract.page_dpi(tmp_path / "a0.pdf", 1)
+    assert extract.MIN_OCR_DPI <= a0 < 300
+    width, height = A0[0] / 72 * a0, A0[1] / 72 * a0
+    assert width * height <= extract.MAX_OCR_PIXELS * 1.05
+
+
+@requires_tesseract
+def test_a_poster_sized_scan_is_read_without_a_bomb_warning(client, services, tmp_path, no_model, recwarn):
+    from PIL import Image
+
+    big = Image.new("L", (11000, 9500), 255)  # ~105 megapixels
+    from PIL import ImageDraw
+
+    draw = ImageDraw.Draw(big)
+    draw.text((500, 500), "PLAN DE MASSE", fill=0)
+    path = tmp_path / "plan.png"
+    big.save(path)
+    r = upload(client, path)
+    assert client.get(f"/api/documents/{r['id']}").json()["status"] == "done"
+    assert not [w for w in recwarn if "DecompressionBomb" in str(w.category)]

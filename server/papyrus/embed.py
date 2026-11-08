@@ -68,6 +68,7 @@ def _sha256(path: Path) -> str:
 # turns the model off (degraded mode) instead of killing the server.
 PROBE = (
     "import sys, numpy as np, onnxruntime as ort\n"
+    "ort.disable_telemetry_events()\n"
     "o = ort.SessionOptions(); o.intra_op_num_threads = 1\n"
     "s = ort.InferenceSession(sys.argv[1], o, providers=['CPUExecutionProvider'])\n"
     "names = [i.name for i in s.get_inputs()]\n"
@@ -211,6 +212,7 @@ class Embedder:
         import onnxruntime as ort
         from tokenizers import Tokenizer
 
+        ort.disable_telemetry_events()  # nothing leaves the machine, not even usage events
         options = ort.SessionOptions()
         options.intra_op_num_threads = self.threads
         options.inter_op_num_threads = 1

@@ -13,6 +13,9 @@ French UI, French and Swiss paperwork (payslips, notary papers, invoices…). Co
 - Nothing leaves the machine, except the one-time download of the embeddings model
   (`intfloat/multilingual-e5-small`, int8 ONNX, ~120 MB), which can be baked into the image or served from a mirror.
 - No generative AI: Tesseract (OCR), a small embeddings model, and word statistics.
+- onnxruntime's usage telemetry is switched off in code (`disable_telemetry_events`); the only outgoing request Papyrus
+  makes is the one-time model download. To be sure of it, block the container's network once the model is in
+  `data/models/` (or bake it into the image with `--build-arg BAKE_MODEL=1`).
 - Target: Synology DS918+ (Celeron J3455, no AVX); idle RAM ~65 MB (the model is unloaded after 15 idle minutes).
 
 ## How it works
