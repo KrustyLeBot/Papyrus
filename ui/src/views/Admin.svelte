@@ -117,7 +117,7 @@
       <dl>
         <dt>Documents</dt><dd>{formatNumber(s.documents)}{#each Object.entries(s.by_status) as [k, v]}{#if k !== 'done'} · {v} {(STATUS[k] || k).toLowerCase()}{/if}{/each}</dd>
         <dt>Taille des documents</dt><dd>{formatSize(s.files_bytes)}</dd>
-        <dt>Base de données</dt><dd>{formatSize(s.db_bytes)}</dd>
+        <dt>Base de données</dt><dd>{formatSize(s.db_bytes)} · journal {s.database.journal.toUpperCase()}{#if s.database.network} <span class="muted">(partage réseau {s.database.network} détecté)</span>{/if}</dd>
         <dt>Tags</dt><dd>{s.tags}</dd>
         <dt>Mémoire du processus</dt><dd>{s.memory_mb ? `${String(s.memory_mb).replace('.', ',')} Mo` : 'inconnue'}</dd>
         <dt>Comptes</dt><dd>{s.auth.disabled ? 'Authentification désactivée (AUTH_DISABLED)' : plural(s.auth.accounts, 'compte', 'comptes')}</dd>

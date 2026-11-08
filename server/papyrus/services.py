@@ -19,7 +19,7 @@ class Services:
     def __init__(self, config: Config, start_worker: bool = False):
         self.config = config
         config.ensure_dirs()
-        self.db = Database(config.db_path)
+        self.db = Database(config.db_path, config.journal)
         self.rules = RulesStore(config.rules_path)
         baked = Path("/opt/papyrus/models")
         dirs = [d for d in (baked, config.model_dir) if d]

@@ -121,9 +121,44 @@ CREATE VIRTUAL TABLE IF NOT EXISTS docs_vocab USING fts5vocab(docs_fts, col);
 """
 
 
+NETWORK_FS = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "afs", "ncpfs", "davfs", "fuse.sshfs", "fuse.rclone", "fuse.s3fs",
+              "fuse.gcsfuse", "ceph", "glusterfs", "fuse.glusterfs"}
+
+
+def network_filesystem(path: Path, mountinfo: str = "/proc/self/mountinfo") -> str | None:
+    """The type of the network file system (cifs, nfs…) holding `path`, None for a local disk. A bind mount of a host
+    share shows up here with the share's type."""
+    try:
+        resolved = str(path.resolve())
+        best, kind = "", None
+        for line in Path(mountinfo).read_text().splitlines():
+            left, _, right = line.partition(" - ")
+            fields = left.split()
+            point = fields[4].replace("\\040", " ")
+            if (resolved == point or resolved.startswith(point.rstrip("/") + "/")) and len(point) >= len(best):
+                best, kind = point, right.split()[0]
+        return kind if kind in NETWORK_FS else None
+    except OSError:
+        return None
+
+
 class Database:
-    def __init__(self, path: Path):
+    """`journal`: "auto" (WAL on a local disk, DELETE on a network share), "wal" or "delete".
+
+    WAL needs shared memory that SMB and NFS do not provide: on a share it ends in « database is locked » or a corrupt file.
+    DELETE (the classic rollback journal) works there, with synchronous=FULL so a cut connection cannot leave it broken. It is
+    slower to write and a writer blocks readers for an instant, which a personal archive does not notice. One Papyrus instance
+    per database folder, always."""
+
+    def __init__(self, path: Path, journal: str = "auto"):
         self.path = path
+        share = network_filesystem(path.parent)
+        self.journal = ("delete" if share else "wal") if journal == "auto" else journal
+        self.network = share
+        if self.network and self.journal == "delete":
+            print(f"papyrus: the data folder is on a network share ({share}): SQLite uses journal_mode=DELETE, synchronous=FULL", flush=True)
+        elif self.network:
+            print(f"papyrus: WARNING the data folder is on a network share ({share}) and journal_mode=WAL was forced: expect lock errors", flush=True)
         self._local = threading.local()
         self._all: list[sqlite3.Connection] = []
         self._lock = threading.Lock()
@@ -143,8 +178,12 @@ class Database:
     def _open(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        if self.journal == "delete":
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA synchronous=FULL")
+        else:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=30000")
         # small page cache: the idle footprint matters more than a few milliseconds

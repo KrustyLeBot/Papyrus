@@ -199,8 +199,14 @@ summaries, deeper questions over the archive — without touching the scanner, t
   documents show otherwise (compare on *your* queries, then keep what finds more of what you expect).
 - The thresholds are precision-first: a paraphrase (« feuille de salaire » for a *bulletin de salaire*) may not reach
   them. Lower the threshold in *Administration → Recherche* to trade precision for more results.
-- **Keep `data/` on a local disk.** SQLite (WAL) must not live on an NFS or SMB share. The *source* folder can: it is
-  only read, by a periodic scan.
+- **`data/` on a local disk is best, on a network share works.** Papyrus detects an NFS/SMB file system under `data/` and
+  then runs SQLite with `journal_mode=DELETE` and `synchronous=FULL` instead of WAL (which needs shared memory a share does
+  not have, and ends in « database is locked » or a corrupt file). It is slower to write and that is fine for a personal
+  archive. Rules on a share: **one Papyrus instance per data folder, always**, and the account that runs the container must
+  be able to write there (for a CIFS mount: `uid=…,gid=…` in the mount options matching `PUID`/`PGID`; if you still see
+  « database is locked », add `nobrl` to the mount options, safe with a single instance). `PAPYRUS_JOURNAL=auto|wal|delete`
+  overrides the detection; *Administration* shows the mode in use. A WAL database moves to DELETE by itself.
+  The *source* folder can be a share too: it is only read, by a periodic scan.
 
 ## Measurements
 

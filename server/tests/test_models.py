@@ -80,3 +80,63 @@ def test_base_model_is_selectable_by_the_environment(monkeypatch):
     assert cfg.embed_model == "base" and cfg.search_defaults["semantic_min"] == 0.84
     monkeypatch.setenv("SEARCH_SEMANTIC_MIN", "0.9")
     assert Config.from_env().search_defaults["semantic_min"] == 0.9
+
+
+def test_a_network_share_is_detected_and_gets_the_safe_journal(tmp_path):
+    from papyrus.db import Database, network_filesystem
+
+    data = tmp_path / "data"
+    data.mkdir()
+    info = tmp_path / "mountinfo"
+    point = str(tmp_path).replace(" ", "\\040")
+    info.write_text(f"20 1 0:1 / / rw - overlay overlay rw\n"
+                    f"31 20 0:27 / {point}/data rw,relatime - cifs //nas/docker2 rw,vers=3.1.1\n")
+    assert network_filesystem(data, str(info)) == "cifs"
+    assert network_filesystem(tmp_path / "elsewhere", str(info)) is None  # the root (overlay) is local
+    info.write_text("20 1 0:1 / / rw - ext4 /dev/sda1 rw\n")
+    assert network_filesystem(data, str(info)) is None
+
+
+@pytest.mark.parametrize("mode,expected,sync", [("delete", "delete", 2), ("wal", "wal", 1)])
+def test_journal_mode_is_applied_and_works_across_threads(tmp_path, mode, expected, sync):
+    import threading
+
+    from papyrus.db import Database
+
+    db = Database(tmp_path / "x.db", journal=mode)
+    assert db.conn.execute("PRAGMA journal_mode").fetchone()[0] == expected
+    assert db.conn.execute("PRAGMA synchronous").fetchone()[0] == sync
+    errors = []
+
+    def writer(n):
+        try:
+            for i in range(20):
+                with db.tx():
+                    db.conn.execute("INSERT INTO settings(key, value) VALUES (?, ?)", (f"k{n}-{i}", "v"))
+        except Exception as error:  # noqa: BLE001
+            errors.append(error)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert not errors and db.conn.execute("SELECT COUNT(*) FROM settings WHERE key LIKE 'k%'").fetchone()[0] == 80
+    db.close()
+
+
+def test_a_database_made_in_wal_can_move_to_delete(tmp_path):
+    from papyrus.db import Database
+
+    db = Database(tmp_path / "y.db", journal="wal")
+    db.set_setting("a", "1")
+    db.close()
+    db2 = Database(tmp_path / "y.db", journal="delete")
+    assert db2.conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete" and db2.setting("a") == "1"
+    db2.close()
+
+
+def test_journal_mode_setting_is_validated(monkeypatch):
+    from papyrus.config import Config
+
+    monkeypatch.setenv("PAPYRUS_JOURNAL", "memory")
+    with pytest.raises(SystemExit, match="PAPYRUS_JOURNAL"):
+        Config.from_env()

@@ -502,6 +502,7 @@ def create_app(config: Config | None = None, services: Services | None = None, s
         return {
             "documents": sum(counts.values()), "by_status": counts, "files_bytes": size, "db_bytes": db_size,
             "tags": db.conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
+            "database": {"journal": db.journal, "network": db.network},
             "locations": db.conn.execute("SELECT COUNT(*) FROM locations").fetchone()[0],
             "ignored": db.conn.execute("SELECT COUNT(*) FROM ignored").fetchone()[0],
             "passwords": svc.vault.count(), "vault": svc.vault.status(),

@@ -35,6 +35,13 @@ def _float(name: str, default: float) -> float:
         raise SystemExit(f"papyrus: {name}={raw!r} is not a number") from None
 
 
+def _journal() -> str:
+    mode = os.environ.get("PAPYRUS_JOURNAL", "auto").strip().lower() or "auto"
+    if mode not in ("auto", "wal", "delete"):
+        raise SystemExit("papyrus: PAPYRUS_JOURNAL must be auto, wal or delete")
+    return mode
+
+
 def _embed_model() -> str:
     from .embed import MODELS
 
@@ -92,6 +99,7 @@ class Config:
     backup_keep: int = 7
     build: str = "dev"
     search_defaults: dict = field(default_factory=dict)
+    journal: str = "auto"
 
     @property
     def db_path(self) -> Path:
@@ -158,6 +166,7 @@ class Config:
             knn_threshold=_float("KNN_SIMILARITY", 0.90),
             backup_keep=_int("BACKUP_KEEP", 7, 0),
             build=os.environ.get("PAPYRUS_BUILD", "dev"),
+            journal=_journal(),
             search_defaults={"semantic_min": _float("SEARCH_SEMANTIC_MIN", _model_default()), "prefix": _bool("SEARCH_PREFIX", True),
                              "fuzzy": _bool("SEARCH_FUZZY", True)},
         )
