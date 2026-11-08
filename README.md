@@ -180,16 +180,39 @@ Layout: `server/papyrus/` — `scanner.py` (the crawler), `pipeline.py` (analysi
 An analysis step is one small function (summary, keywords, embedding). A local LLM could take over or complete them —
 summaries, deeper questions over the archive — without touching the scanner, the identity of documents or the UI.
 
+## Machine profiles and the embeddings model
+
+| | Synology DS918+ (J3455, no AVX, 4-8 GB) | PC with AVX2 (i5 8th gen, 16 GB) |
+|---|---|---|
+| `EMBED_MODEL` | `small` (default) | `small`, or try `base` |
+| `EMBED_THREADS` / `OCR_THREADS` | 2 / 2 | 4 / 4 |
+| `EMBED_IDLE_UNLOAD_MIN` | 15 | `0` (keep the model loaded: the first search is instant) |
+| `MEM_LIMIT` | `1g` | `4g` |
+
+- `small` = `multilingual-e5-small` (~120 MB, 384 dimensions). `base` = `multilingual-e5-base` (~280 MB, 768 dimensions,
+  about twice as slow). Both are int8 ONNX, downloaded once, SHA-256 checked. Switching `EMBED_MODEL` clears the
+  stored embeddings and recomputes them in the background; each model has its own default *Similarité minimale*
+  (`small` 0.86, `base` 0.84), because their scores are not on the same scale.
+- **Measured here** (4 vCPU Xeon with AVX512-VNNI, 12 short documents, 10 queries): the two models separate related from
+  unrelated documents about equally well (gap between the median related score and the 95th percentile of unrelated
+  ones: `small` 0.039, `base` 0.029). On this test `base` is not better, only slower: stay on `small` unless your own
+  documents show otherwise (compare on *your* queries, then keep what finds more of what you expect).
+- The thresholds are precision-first: a paraphrase (« feuille de salaire » for a *bulletin de salaire*) may not reach
+  them. Lower the threshold in *Administration → Recherche* to trade precision for more results.
+- **Keep `data/` on a local disk.** SQLite (WAL) must not live on an NFS or SMB share. The *source* folder can: it is
+  only read, by a periodic scan.
+
 ## Measurements
 
-Taken on a 4-core x86_64 dev machine (not the J3455, which will be slower):
+Taken on a 4 vCPU Xeon (AVX512-VNNI, which speeds up int8 a lot: an AVX2-only CPU such as an i5 8th gen will be
+slower per thread, and the J3455, which has no AVX, much slower still). Order of magnitude, not a promise:
 
-| | |
-|---|---|
-| Idle RAM, model unloaded | ~65 MB (limit 150 MB) |
-| Model loaded (embedding / semantic search) | ~470 MB peak, back to ~68 MB after the idle unload |
-| Embedding of one document | ~0.3 s |
-| Search, model warm (small archive) | ~12 ms; first query after an unload ~1.5 s (model load) |
-| OCR, one sparse A4 page at 300 dpi | 0.4 s (a dense page takes several seconds) |
+| | `small` | `base` |
+|---|---|---|
+| RAM, model loaded | ~460 MB | ~620 MB |
+| Embedding of one long document (3 chunks), 1 / 2 / 4 threads | 355 / 201 / 116 ms | 718 / 424 / 255 ms |
+| Idle RAM, model unloaded | ~65 MB | ~65 MB |
+| Search, model warm (small archive) | ~12 ms | ~15 ms |
+| OCR, one sparse A4 page at 300 dpi | 0.4 s (a dense page takes several seconds) | |
 
-Re-measure on the NAS: `docker stats papyrus` at rest, then after a first search.
+Re-measure on the target machine: `docker stats papyrus` at rest, then after a first search.

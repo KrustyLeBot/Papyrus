@@ -35,6 +35,21 @@ def _float(name: str, default: float) -> float:
         raise SystemExit(f"papyrus: {name}={raw!r} is not a number") from None
 
 
+def _embed_model() -> str:
+    from .embed import MODELS
+
+    name = os.environ.get("EMBED_MODEL", "small").strip().lower() or "small"
+    if name not in MODELS:
+        raise SystemExit(f"papyrus: EMBED_MODEL={name!r} is unknown (choose {' or '.join(MODELS)})")
+    return name
+
+
+def _model_default() -> float:
+    from .embed import MODELS
+
+    return MODELS[_embed_model()]["semantic_min"]
+
+
 def _networks(raw: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     nets = []
     for part in raw.replace(";", ",").split(","):
@@ -64,6 +79,7 @@ class Config:
     ocr_max_pages: int = 0
     ocr_langs: str = "fra+eng"
     embed_threads: int = 2
+    embed_model: str = "small"
     embed_idle_unload_min: int = 15
     model_url: str = ""
     session_days: int = 30
@@ -130,6 +146,7 @@ class Config:
             ocr_max_pages=_int("OCR_MAX_PAGES", 0, 0),
             ocr_langs=os.environ.get("OCR_LANGS", "fra+eng").strip() or "fra+eng",
             embed_threads=_int("EMBED_THREADS", 2, 1, 16),
+            embed_model=_embed_model(),
             embed_idle_unload_min=_int("EMBED_IDLE_UNLOAD_MIN", 15, 0),
             model_url=os.environ.get("MODEL_URL", "").strip(),
             session_days=_int("SESSION_DAYS", 30, 1, 365),
@@ -141,6 +158,6 @@ class Config:
             knn_threshold=_float("KNN_SIMILARITY", 0.90),
             backup_keep=_int("BACKUP_KEEP", 7, 0),
             build=os.environ.get("PAPYRUS_BUILD", "dev"),
-            search_defaults={"semantic_min": _float("SEARCH_SEMANTIC_MIN", 0.86), "prefix": _bool("SEARCH_PREFIX", True),
+            search_defaults={"semantic_min": _float("SEARCH_SEMANTIC_MIN", _model_default()), "prefix": _bool("SEARCH_PREFIX", True),
                              "fuzzy": _bool("SEARCH_FUZZY", True)},
         )

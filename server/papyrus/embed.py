@@ -17,16 +17,50 @@ from pathlib import Path
 
 import numpy as np
 
-REVISION = "761b726dd34fb83930e26aab4e9ac3899aa1fa78"
-DEFAULT_BASE = f"https://huggingface.co/Xenova/multilingual-e5-small/resolve/{REVISION}"
-FILES = {
-    "model_quantized.onnx": ("onnx/model_quantized.onnx", "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193"),
-    "tokenizer.json": ("tokenizer.json", "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"),
+# Two profiles of the same family (multilingual-e5, ONNX int8, Xenova's export). `small` is the one for a NAS without AVX
+# (J3455: ~120 MB, 384 dimensions); `base` is for a machine with AVX2 and RAM to spare (~280 MB on disk, 768 dimensions,
+# noticeably better at telling close documents apart). `semantic_min` is the default "similarité minimale" measured
+# for each (see README, Measurements): the scores of a model are not comparable with another's.
+MODELS = {
+    "small": {
+        "repo": "Xenova/multilingual-e5-small", "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78", "folder": "e5-small",
+        "dim": 384, "semantic_min": 0.86,
+        "files": {
+            "model_quantized.onnx": ("onnx/model_quantized.onnx", "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193"),
+            "tokenizer.json": ("tokenizer.json", "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"),
+        },
+    },
+    "base": {
+        "repo": "Xenova/multilingual-e5-base", "revision": "1ec9243030a27d1a115d5c340572074c125b58b2", "folder": "e5-base",
+        "dim": 768, "semantic_min": 0.84,
+        "files": {
+            "model_quantized.onnx": ("onnx/model_quantized.onnx", "df7a9a29309e3ad491e1783adf8baee710262cc06079c7cbab63c630277fac94"),
+            "tokenizer.json": ("tokenizer.json", "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626"),
+        },
+    },
 }
-DIM = 384
+DEFAULT_MODEL = "small"
+FILES = MODELS["small"]["files"]  # kept for callers that only know the small model
 MAX_TOKENS = 512
 CHUNK_CHARS = 1600
 MAX_CHUNKS = 3
+
+
+def _trim_memory() -> None:
+    """Give freed pages back to the system (glibc keeps them otherwise)."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 # Run in a child process before the first in-process load: an onnxruntime build that needs instructions the CPU
@@ -62,7 +96,12 @@ def _sha256(path: Path) -> str:
 
 class Embedder:
     def __init__(self, model_dirs: list[Path], model_url: str = "", threads: int = 2, idle_minutes: int = 15,
-                 download_dir: Path | None = None):
+                 download_dir: Path | None = None, model: str = DEFAULT_MODEL):
+        if model not in MODELS:
+            raise SystemExit(f"papyrus: EMBED_MODEL={model!r} is unknown (choose {' or '.join(MODELS)})")
+        self.name = model
+        self.spec = MODELS[model]
+        self.dim = self.spec["dim"]
         self.model_dirs = model_dirs
         self.download_dir = download_dir or model_dirs[-1]
         self.model_url = model_url.rstrip("/")
@@ -84,9 +123,13 @@ class Embedder:
     # ---------------------------------------------------------------- files
 
     def model_dir(self) -> Path | None:
+        """The folder holding this model's files: <dir>/<folder> (e5-small, e5-base), and for the small model also <dir>
+        itself, where the first versions put them."""
+        files = self.spec["files"]
         for d in self.model_dirs:
-            if all((d / name).is_file() for name in FILES):
-                return d
+            for candidate in ([d / self.spec["folder"]] + ([d] if self.name == "small" else [])):
+                if all((candidate / name).is_file() for name in files):
+                    return candidate
         return None
 
     @property
@@ -123,12 +166,13 @@ class Embedder:
         checks every file's SHA-256, and only then moves it in place."""
         if self.available:
             return True
-        base = self.model_url or DEFAULT_BASE
-        target = self.download_dir
+        spec = self.spec
+        base = self.model_url or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}"
+        target = self.download_dir / spec["folder"]
         self.downloading = True
         try:
             target.mkdir(parents=True, exist_ok=True)
-            for name, (remote, sha) in FILES.items():
+            for name, (remote, sha) in spec["files"].items():
                 final = target / name
                 if final.is_file() and _sha256(final) == sha:
                     continue
@@ -148,7 +192,7 @@ class Embedder:
                 part.replace(final)
             self.error = None
             self.version += 1
-            print("papyrus: embeddings model ready", flush=True)
+            print(f"papyrus: embeddings model {self.name} ready", flush=True)
             return True
         except Exception as error:  # noqa: BLE001 - offline, mirror missing… the app runs in degraded mode
             self.error = f"modèle d'embeddings indisponible : {error}"

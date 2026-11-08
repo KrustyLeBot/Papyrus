@@ -15,6 +15,7 @@ RUN npm run build \
 FROM python:3.12.8-slim-bookworm
 ARG BUILD=dev
 ARG BAKE_MODEL=0
+ARG EMBED_MODEL=small
 LABEL org.opencontainers.image.source="https://github.com/KrustyLeBot/Papyrus" \
       org.opencontainers.image.title="papyrus" \
       org.opencontainers.image.description="Crawler and search engine for the PDF and DOCX files of a NAS: OCR, full-text and semantic search"
@@ -33,7 +34,7 @@ COPY --from=ui /src/ui/dist/ static/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 # optional: the embeddings model inside the image (checked by SHA-256), for a NAS that must not download anything
 RUN if [ "$BAKE_MODEL" = "1" ]; then \
-      python -c "from pathlib import Path; from papyrus.embed import Embedder; d = Path('/opt/papyrus/models'); import sys; sys.exit(0 if Embedder([d], download_dir=d, idle_minutes=0).download() else 1)"; \
+      python -c "from pathlib import Path; from papyrus.embed import Embedder; d = Path('/opt/papyrus/models'); import sys; sys.exit(0 if Embedder([d], download_dir=d, idle_minutes=0, model='$EMBED_MODEL').download() else 1)"; \
     fi
 RUN python -m compileall -q /app /usr/local/lib/python3.12 \
  && chmod +x /usr/local/bin/docker-entrypoint.sh \

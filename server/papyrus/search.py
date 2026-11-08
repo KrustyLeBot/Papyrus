@@ -85,9 +85,10 @@ def _snippet_html(raw: str) -> str:
 class VectorIndex:
     """Every document's embedding in one matrix, loaded on the first semantic search and dropped when idle."""
 
-    def __init__(self, db: Database, idle_seconds: int = 900):
+    def __init__(self, db: Database, idle_seconds: int = 900, dim: int = 384):
         self.db = db
         self.idle_seconds = idle_seconds
+        self.dim = dim
         self._lock = threading.Lock()
         self._ids: np.ndarray | None = None
         self._matrix: np.ndarray | None = None
@@ -105,14 +106,17 @@ class VectorIndex:
             if self._matrix is None or stamp != self._stamp:
                 rows = self.db.conn.execute("SELECT id, embedding FROM documents WHERE embedding IS NOT NULL "
                                             "AND status = 'done' AND hidden = 0").fetchall()
+                rows = [r for r in rows if len(r["embedding"]) == self.dim * 4]  # another model's vectors are skipped
                 self._ids = np.array([r["id"] for r in rows], dtype=np.int64)
                 self._matrix = (np.vstack([blob_to_vec(r["embedding"]) for r in rows]) if rows
-                                else np.zeros((0, 384), dtype=np.float32))
+                                else np.zeros((0, self.dim), dtype=np.float32))
                 self._stamp = stamp
             self._used = time.monotonic()
             return self._ids, self._matrix
 
     def drop_if_idle(self) -> None:
+        if not self.idle_seconds:  # EMBED_IDLE_UNLOAD_MIN=0: keep it loaded
+            return
         with self._lock:
             if self._matrix is not None and time.monotonic() - self._used > self.idle_seconds:
                 self._ids = self._matrix = None
@@ -281,7 +285,7 @@ class Searcher:
     def similar(self, doc_id: int, limit: int = 10) -> list[tuple[int, float]]:
         row = self.db.conn.execute("SELECT embedding FROM documents WHERE id = ?", (doc_id,)).fetchone()
         vec = blob_to_vec(row["embedding"]) if row else None
-        if vec is None:
+        if vec is None or vec.shape[0] != self.vectors.dim:
             return []
         ids, matrix = self.vectors.get()
         if not len(ids):

@@ -24,12 +24,14 @@ class Services:
         baked = Path("/opt/papyrus/models")
         dirs = [d for d in (baked, config.model_dir) if d]
         self.embedder = Embedder(dirs, config.model_url, config.embed_threads, config.embed_idle_unload_min,
-                                 download_dir=config.model_dir)
+                                 download_dir=config.model_dir, model=config.embed_model)
         self.vault = Vault(self.db)
         self.processor = Processor(config, self.db, self.rules, self.embedder, self.vault)
         self.library = Library(config, self.db, self.processor.source_path, self.vault)
-        self.vectors = VectorIndex(self.db, idle_seconds=max(config.embed_idle_unload_min, 1) * 60)
-        self.searcher = Searcher(self.db, self.embedder, self.vectors, config.search_defaults)
+        self.vectors = VectorIndex(self.db, idle_seconds=config.embed_idle_unload_min * 60, dim=self.embedder.dim)  # 0 = never
+        self._check_model_change()
+        self.searcher = Searcher(self.db, self.embedder, self.vectors,
+                                 {"semantic_min": self.embedder.spec["semantic_min"], **config.search_defaults})  # each model has its own scale
         self.worker = Worker(self.processor, config, self.db)
         self.scanner = Scanner(config, self.db)
         self.scanner.on_new_work = self.worker.wake
@@ -37,6 +39,17 @@ class Services:
         if start_worker:
             self.worker.start()
             self.scanner.start()
+
+    def _check_model_change(self) -> None:
+        """Embeddings of another model (another size, other scores) are of no use: they are cleared, and the worker
+        computes them again with the new model as soon as it is available."""
+        saved = self.db.setting("embed_model") or "small"  # databases from before this setting held the small model
+        if saved != self.embedder.name:
+            with self.db.tx():
+                n = self.db.conn.execute("UPDATE documents SET embedding = NULL WHERE embedding IS NOT NULL").rowcount
+            print(f"papyrus: embeddings model changed ({saved} → {self.embedder.name}): {n} document(s) will be embedded again", flush=True)
+        with self.db.tx():
+            self.db.set_setting("embed_model", self.embedder.name)
 
     def close(self) -> None:
         self.scanner.stop()
