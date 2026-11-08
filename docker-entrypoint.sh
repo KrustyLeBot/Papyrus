@@ -9,7 +9,9 @@ if [ "$(id -u)" = "0" ]; then
   chown "$PUID:$PGID" /data 2>/dev/null || true
   exec setpriv --reuid="$PUID" --regid="$PGID" --clear-groups python -m papyrus "$@"
 fi
-if [ ! -w /data ]; then
+# only the server needs the data folder (adduser, check… do not)
+case "${1:-serve}" in serve|run|backup|export|reindex) NEED_DATA=1 ;; *) NEED_DATA=0 ;; esac
+if [ "$NEED_DATA" = "1" ] && [ ! -w /data ]; then
   echo "papyrus: /data is not writable by uid $(id -u). Set PUID/PGID to the owner of the data folder." >&2
   exit 1
 fi
