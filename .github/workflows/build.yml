@@ -29,7 +29,7 @@ jobs:
         with:
           node-version: 22
       - name: System tools (OCR, PDF)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng poppler-utils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng tesseract-ocr-osd poppler-utils
       - name: Server dependencies
         run: pip install -r server/requirements.txt -r server/requirements-test.txt
       - name: Embeddings model (checked by SHA-256), so the semantic tests run for real

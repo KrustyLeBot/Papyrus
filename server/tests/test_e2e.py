@@ -136,3 +136,20 @@ def test_noisy_scan_is_ocrised_and_classified(client, services, tmp_path, no_mod
     assert doc["status"] == "done" and doc["ocr"]
     assert "FACTURE" in doc["text"].upper()
     assert any(g["path"].startswith("Factures") for g in doc["groups"])
+
+
+@requires_tesseract
+@pytest.mark.parametrize("angle", [90, 180, 270])
+def test_sideways_scan_is_read_upright(client, services, tmp_path, no_model, angle):
+    from PIL import Image
+
+    lines = ["DIPLOME DU BACCALAUREAT GENERAL", "Academie de Grenoble", "Fait a Grenoble, le 22 Septembre 2015",
+             "Mention bien", "Ministere de l'education nationale", "Signature du titulaire"]
+    upright = docgen.noisy_scan(tmp_path / "up.png", lines)
+    turned = tmp_path / "turned.png"
+    Image.open(upright).rotate(angle, expand=True).save(turned)
+    r = upload(client, turned)
+    drain(services)
+    doc = client.get(f"/api/documents/{r['id']}").json()
+    assert "BACCALAUREAT" in doc["text"].upper()
+    assert doc["date"] == "2015-09-22" and doc["date_source"] == "detected"

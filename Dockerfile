@@ -24,7 +24,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MALLOC_ARENA_MAX=2 \
     TZ=Europe/Paris
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng poppler-utils libgomp1 tzdata \
+      tesseract-ocr tesseract-ocr-fra tesseract-ocr-eng tesseract-ocr-osd poppler-utils libgomp1 tzdata \
  && rm -rf /var/lib/apt/lists/*
 COPY server/requirements.txt ./
 RUN pip install --no-cache-dir --no-compile -r requirements.txt

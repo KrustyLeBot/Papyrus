@@ -80,8 +80,30 @@ def pdf_pages(path: Path) -> int:
     return int(m.group(1)) if m else 0
 
 
-def ocr_image(image: Path, langs: str, threads: int) -> str:
+def detect_rotation(image: Path, threads: int) -> int:
+    """Degrees (0, 90, 180, 270) the page must be turned clockwise to stand upright, from Tesseract's orientation
+    detection (osd). 0 when it cannot tell (too little text) or is not confident."""
     env = dict(os.environ, OMP_THREAD_LIMIT=str(threads))
+    try:
+        out = _run(["tesseract", str(image), "stdout", "--psm", "0", "-l", "osd"], env=env, timeout=120).decode("utf-8", "replace")
+    except ExtractError:
+        return 0
+    angle = re.search(r"Rotate:\s*(\d+)", out)
+    confidence = re.search(r"Orientation confidence:\s*([\d.]+)", out)
+    if not angle or not confidence or float(confidence.group(1)) < 1.5:
+        return 0
+    return int(angle.group(1)) % 360
+
+
+def ocr_image(image: Path, langs: str, threads: int) -> str:
+    """OCR of one page image; a page scanned sideways or upside down is turned upright first."""
+    env = dict(os.environ, OMP_THREAD_LIMIT=str(threads))
+    angle = detect_rotation(image, threads)
+    if angle:
+        from PIL import Image
+
+        with Image.open(image) as img:
+            img.rotate(-angle, expand=True, fillcolor=255 if img.mode == "L" else (255, 255, 255)).save(image)
     return _run(["tesseract", str(image), "stdout", "-l", langs, "--psm", "3"], env=env).decode("utf-8", "replace")
 
 

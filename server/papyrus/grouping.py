@@ -251,7 +251,9 @@ class Grouper:
                 votes[gid] += float(sims[i])
                 counts[gid] += 1
         ranked = sorted(votes, key=lambda g: -votes[g])
-        suggestions = [{"group_id": g, "score": round(votes[g] / max(counts[g], 1), 3), "votes": counts[g]} for g in ranked[:3]]
+        # e5 scores unrelated documents around 0.85: a suggestion needs a clearly better similarity than that
+        suggestions = [{"group_id": g, "score": round(votes[g] / max(counts[g], 1), 3), "votes": counts[g]} for g in ranked[:3]
+                       if votes[g] / max(counts[g], 1) >= self.knn_threshold - 0.02]
         if ranked:
             top = ranked[0]
             neighbours = len(order)
